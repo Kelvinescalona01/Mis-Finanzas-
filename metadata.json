@@ -1,0 +1,6 @@
+{
+  "name": "Mis Finanzas",
+  "description": "App para monitorear finanzas personales con la regla 50/30/20 y sincronización con Google Sheets",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
