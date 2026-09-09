@@ -61,9 +61,22 @@ export interface ResumenMes {
   };
 }
 
+export interface GoogleDriveFile {
+  id: string;
+  name: string;
+  mimeType: string;
+  modifiedTime?: string;
+  webViewLink?: string;
+}
+
 export interface AppSettings {
   moneda: string;
   simboloMoneda: string;
   sheetsEndpoint: string;
   autoSync: boolean;
+  googleSheetId?: string;
+  googleSheetName?: string;
+  googleSpreadsheetTitle?: string;
+  googleDriveWebViewLink?: string;
+  lastSyncedAt?: string;
 }

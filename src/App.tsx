@@ -1,7 +1,10 @@
 import React, { useState, useEffect } from 'react';
+import { User } from 'firebase/auth';
 import { Movimiento, MetaAhorro, AppSettings } from './types';
 import { MESES, DEFAULT_SETTINGS, INITIAL_METAS, getInitialMovements } from './data/initialData';
 import { calculateResumen } from './utils/finance';
+import { initAuth, getAccessToken } from './utils/firebaseAuth';
+import { appendMovementToGoogleSheet, readMovementsFromGoogleSheet } from './utils/googleSheetsService';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
 import { HistoryView } from './components/HistoryView';
@@ -17,18 +20,41 @@ export const App: React.FC = () => {
     return MESES[new Date().getMonth()];
   });
 
-  // Data state with localStorage persistence
+  // Google / Firebase Auth state
+  const [user, setUser] = useState<User | null>(null);
+  const [isSyncing, setIsSyncing] = useState<boolean>(false);
+
+  useEffect(() => {
+    const unsubscribe = initAuth(
+      (u) => setUser(u),
+      () => setUser(null)
+    );
+    return () => unsubscribe();
+  }, []);
+
+  // Data state with clean initial state (all months start at zero unless Google Sheets has data)
   const [movimientos, setMovimientos] = useState<Movimiento[]>(() => {
     try {
       const saved = localStorage.getItem('mis_finanzas_movimientos');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          // Detect and wipe old mock sample items
+          const hasOldMockData = parsed.some(
+            (m: any) =>
+              (typeof m.id === 'string' && m.id.startsWith('mov-')) ||
+              m.concepto === 'Sueldo Quincenal (1ra Quincena)'
+          );
+          if (!hasOldMockData) {
+            return parsed;
+          }
+          localStorage.removeItem('mis_finanzas_movimientos');
+        }
       }
     } catch (e) {
       console.error('Error reading localStorage', e);
     }
-    return getInitialMovements();
+    return [];
   });
 
   const [metas, setMetas] = useState<MetaAhorro[]>(() => {
@@ -36,12 +62,22 @@ export const App: React.FC = () => {
       const saved = localStorage.getItem('mis_finanzas_metas');
       if (saved) {
         const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+        if (Array.isArray(parsed)) {
+          const hasOldMockMetas = parsed.some(
+            (m: any) =>
+              (typeof m.id === 'string' && m.id.startsWith('meta-')) ||
+              m.nombre?.includes('Fondo de Emergencia (6 meses)')
+          );
+          if (!hasOldMockMetas) {
+            return parsed;
+          }
+          localStorage.removeItem('mis_finanzas_metas');
+        }
       }
     } catch (e) {
       console.error('Error reading localStorage', e);
     }
-    return INITIAL_METAS;
+    return [];
   });
 
   const [settings, setSettings] = useState<AppSettings>(() => {
@@ -86,6 +122,40 @@ export const App: React.FC = () => {
     }
   }, [settings]);
 
+  // If connected to a Google Sheet, pull latest records from Drive so app mirrors the spreadsheet
+  useEffect(() => {
+    if (!user || !settings.googleSheetId) return;
+
+    let isMounted = true;
+    setIsSyncing(true);
+    getAccessToken()
+      .then(async (token) => {
+        if (!token || !settings.googleSheetId || !isMounted) return;
+        const sheetMovements = await readMovementsFromGoogleSheet(
+          token,
+          settings.googleSheetId,
+          settings.googleSheetName || 'Movimientos'
+        );
+        if (isMounted) {
+          setMovimientos(sheetMovements);
+          setSettings((prev) => ({
+            ...prev,
+            lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+          }));
+        }
+      })
+      .catch((err) => {
+        console.warn('Startup sync from Google Sheets:', err);
+      })
+      .finally(() => {
+        if (isMounted) setIsSyncing(false);
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [user, settings.googleSheetId, settings.googleSheetName]);
+
   // Toast dispatcher
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
     const id = `toast-${Date.now()}-${Math.random()}`;
@@ -105,17 +175,77 @@ export const App: React.FC = () => {
   // Handlers for movements
   const handleSaveMovement = (data: Omit<Movimiento, 'id'>, editId?: string) => {
     if (editId) {
+      const updatedMovement: Movimiento = { ...data, id: editId };
       setMovimientos((prev) =>
-        prev.map((m) => (m.id === editId ? { ...data, id: editId } : m))
+        prev.map((m) => (m.id === editId ? updatedMovement : m))
       );
       showToast('Movimiento actualizado', 'success');
+
+      // Real-time sync if connected to Google Sheets
+      if (settings.autoSync && settings.googleSheetId) {
+        setIsSyncing(true);
+        getAccessToken().then((token) => {
+          if (token && settings.googleSheetId) {
+            appendMovementToGoogleSheet(
+              token,
+              settings.googleSheetId,
+              updatedMovement,
+              settings.googleSheetName || 'Movimientos'
+            )
+              .then(() => {
+                setSettings((prev) => ({
+                  ...prev,
+                  lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                }));
+              })
+              .catch((err) => {
+                console.warn('Error syncing updated movement to Google Sheets:', err);
+              })
+              .finally(() => {
+                setIsSyncing(false);
+              });
+          } else {
+            setIsSyncing(false);
+          }
+        });
+      }
     } else {
       const newMovement: Movimiento = {
         ...data,
         id: `mov-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       };
       setMovimientos((prev) => [...prev, newMovement]);
-      showToast('Movimiento guardado exitosamente', 'success');
+      showToast('Movimiento guardado', 'success');
+
+      // Real-time sync if connected to Google Sheets
+      if (settings.autoSync && settings.googleSheetId) {
+        setIsSyncing(true);
+        getAccessToken().then((token) => {
+          if (token && settings.googleSheetId) {
+            appendMovementToGoogleSheet(
+              token,
+              settings.googleSheetId,
+              newMovement,
+              settings.googleSheetName || 'Movimientos'
+            )
+              .then(() => {
+                setSettings((prev) => ({
+                  ...prev,
+                  lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+                }));
+              })
+              .catch((err) => {
+                console.warn('Error syncing new movement to Google Sheets:', err);
+              })
+              .finally(() => {
+                setIsSyncing(false);
+              });
+          } else {
+            setIsSyncing(false);
+          }
+        });
+      }
+
       // If movement month is different from current, switch to it to show the change
       if (data.mes && data.mes !== selectedMonth) {
         setSelectedMonth(data.mes);
@@ -195,22 +325,29 @@ export const App: React.FC = () => {
   };
 
   const handleResetSampleData = () => {
-    setMovimientos(getInitialMovements());
-    setMetas(INITIAL_METAS);
-    showToast('Datos de ejemplo cargados', 'info');
+    setMovimientos([]);
+    setMetas([]);
+    showToast('Todos los datos se han reiniciado a cero', 'info');
   };
 
   const handleClearAll = () => {
-    if (window.confirm('¿Seguro que deseas borrar todos los movimientos y metas?')) {
+    if (window.confirm('¿Seguro que deseas borrar todos los movimientos y metas y dejarlos en cero?')) {
       setMovimientos([]);
       setMetas([]);
-      showToast('Todos los datos han sido borrados', 'info');
+      showToast('Todos los datos han sido borrados (en cero)', 'info');
     }
   };
 
   const handleImportData = (data: { movimientos: Movimiento[]; metas: MetaAhorro[] }) => {
     if (data.movimientos) setMovimientos(data.movimientos);
     if (data.metas) setMetas(data.metas);
+  };
+
+  const handleImportMovements = (importedMovements: Movimiento[]) => {
+    setMovimientos(importedMovements);
+    if (importedMovements.length > 0) {
+      showToast(`Se cargaron ${importedMovements.length} movimientos desde Google Sheets`, 'success');
+    }
   };
 
   return (
@@ -220,6 +357,9 @@ export const App: React.FC = () => {
         onSelectScreen={setCurrentScreen}
         selectedMonth={selectedMonth}
         onSelectMonth={setSelectedMonth}
+        isLinkedToSheets={Boolean(settings.googleSheetId)}
+        isSyncing={isSyncing}
+        sheetTitle={settings.googleSpreadsheetTitle}
         onOpenAddModal={() => {
           setEditingMovement(null);
           setIsAddModalOpen(true);
@@ -233,12 +373,14 @@ export const App: React.FC = () => {
             movimientos={movimientos}
             metas={metas}
             settings={settings}
+            isSyncing={isSyncing}
             onOpenAddModal={() => {
               setEditingMovement(null);
               setIsAddModalOpen(true);
             }}
             onNavigateToHistory={() => setCurrentScreen('history')}
             onNavigateToGoals={() => setCurrentScreen('goals')}
+            onNavigateToSettings={() => setCurrentScreen('settings')}
           />
         )}
 
@@ -275,9 +417,12 @@ export const App: React.FC = () => {
             movimientos={movimientos}
             metas={metas}
             onImportData={handleImportData}
+            onImportMovements={handleImportMovements}
             onResetSampleData={handleResetSampleData}
             onClearAll={handleClearAll}
             onShowToast={showToast}
+            user={user}
+            onUserChange={setUser}
           />
         )}
       </main>

@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
-import { Settings, RefreshCw, CheckCircle2, AlertCircle, FileText, Download, Upload, RotateCcw } from 'lucide-react';
+import { Settings, RefreshCw, CheckCircle2, AlertCircle, FileText, Download, Upload, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
+import { User } from 'firebase/auth';
 import { AppSettings, Movimiento, MetaAhorro } from '../types';
+import { GoogleSheetsIntegration } from './GoogleSheetsIntegration';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -8,9 +10,12 @@ interface SettingsViewProps {
   movimientos: Movimiento[];
   metas: MetaAhorro[];
   onImportData: (data: { movimientos: Movimiento[]; metas: MetaAhorro[] }) => void;
+  onImportMovements: (movements: Movimiento[]) => void;
   onResetSampleData: () => void;
   onClearAll: () => void;
   onShowToast: (msg: string, type?: 'success' | 'error' | 'info') => void;
+  user: User | null;
+  onUserChange: (user: User | null) => void;
 }
 
 export const SettingsView: React.FC<SettingsViewProps> = ({
@@ -19,9 +24,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   movimientos,
   metas,
   onImportData,
+  onImportMovements,
   onResetSampleData,
   onClearAll,
   onShowToast,
+  user,
+  onUserChange,
 }) => {
   const [endpoint, setEndpoint] = useState(settings.sheetsEndpoint);
   const [moneda, setMoneda] = useState(settings.moneda);
@@ -29,6 +37,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [isTesting, setIsTesting] = useState(false);
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [showAdvancedAppsScript, setShowAdvancedAppsScript] = useState(false);
 
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
@@ -143,89 +152,111 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
 
   return (
     <div className="space-y-5 pb-8 max-w-4xl mx-auto">
-      {/* Sincronización Google Sheets */}
-      <div className="bg-white border border-[#DCE3DC] rounded-2xl p-5 md:p-6 shadow-xs space-y-4">
-        <div>
-          <h2 className="font-display text-base md:text-lg font-bold text-[#16241E] flex items-center gap-2">
-            <RefreshCw className="w-4 h-4 text-[#3E7C6B]" />
-            <span>Conexión con Google Sheets</span>
-          </h2>
-          <p className="text-xs text-[#6B776F] mt-1">
-            Puedes sincronizar con tu propia hoja de cálculo usando Google Apps Script (Code.gs).
-          </p>
-        </div>
+      {/* Integración oficial Google Drive & Google Sheets en tiempo real */}
+      <GoogleSheetsIntegration
+        settings={settings}
+        onUpdateSettings={onUpdateSettings}
+        movimientos={movimientos}
+        onImportMovements={onImportMovements}
+        onShowToast={onShowToast}
+        user={user}
+        onUserChange={onUserChange}
+      />
 
-        <form onSubmit={handleSaveSettings} className="space-y-3">
+      {/* Opción adicional: Conexión mediante Apps Script (Code.gs) */}
+      <div className="bg-white border border-[#DCE3DC] rounded-2xl p-5 md:p-6 shadow-xs space-y-3">
+        <button
+          type="button"
+          onClick={() => setShowAdvancedAppsScript((prev) => !prev)}
+          className="w-full flex items-center justify-between text-left focus:outline-none"
+        >
           <div>
-            <label className="block text-xs font-semibold text-[#16241E] mb-1">
-              URL de la Web App de Apps Script o /api local
-            </label>
-            <input
-              type="text"
-              value={endpoint}
-              onChange={(e) => setEndpoint(e.target.value)}
-              placeholder="https://script.google.com/macros/s/.../exec o /api"
-              className="w-full bg-[#FAFBF9] border border-[#DCE3DC] rounded-xl px-3 py-2 text-xs text-[#16241E] focus:outline-none focus:ring-2 focus:ring-[#3E7C6B]"
-            />
+            <h2 className="font-display text-sm md:text-base font-bold text-[#16241E] flex items-center gap-2">
+              <RefreshCw className="w-4 h-4 text-[#6B776F]" />
+              <span>Opciones alternativas: Conexión mediante Apps Script (Code.gs)</span>
+            </h2>
+            <p className="text-xs text-[#6B776F] mt-0.5">
+              Si prefieres usar una macro personalizada o webhook /exec publicado en Google Apps Script.
+            </p>
           </div>
+          <span className="text-[#6B776F] hover:text-[#16241E] p-1">
+            {showAdvancedAppsScript ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+          </span>
+        </button>
 
-          <div className="flex flex-wrap gap-2 pt-1">
-            <button
-              type="submit"
-              className="bg-[#16241E] hover:bg-[#233830] text-white text-xs font-semibold px-4 py-2 rounded-xl transition-colors"
-            >
-              Guardar Configuración
-            </button>
-            <button
-              type="button"
-              onClick={handleTestConnection}
-              disabled={isTesting}
-              className="border border-[#DCE3DC] hover:bg-[#EEF2EE] text-[#16241E] text-xs font-semibold px-3 py-2 rounded-xl transition-colors disabled:opacity-50"
-            >
-              {isTesting ? 'Probando...' : 'Probar Conexión'}
-            </button>
-            <button
-              type="button"
-              onClick={handleSyncToEndpoint}
-              disabled={isSyncing}
-              className="border border-[#3E7C6B] text-[#3E7C6B] hover:bg-[#3E7C6B]/10 text-xs font-semibold px-3 py-2 rounded-xl transition-colors disabled:opacity-50"
-            >
-              {isSyncing ? 'Sincronizando...' : 'Sincronizar a Google Sheets'}
-            </button>
-          </div>
-
-          {testResult && (
-            <div
-              className={`p-3 rounded-xl text-xs font-medium flex items-center gap-2 ${
-                testResult.ok
-                  ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                  : 'bg-rose-50 text-rose-800 border border-rose-200'
-              }`}
-            >
-              {testResult.ok ? (
-                <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-              ) : (
-                <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
-              )}
-              <span>{testResult.message}</span>
+        {showAdvancedAppsScript && (
+          <form onSubmit={handleSaveSettings} className="space-y-3 pt-3 border-t border-[#EEF2EE]">
+            <div>
+              <label className="block text-xs font-semibold text-[#16241E] mb-1">
+                URL de la Web App de Apps Script o /api local
+              </label>
+              <input
+                type="text"
+                value={endpoint}
+                onChange={(e) => setEndpoint(e.target.value)}
+                placeholder="https://script.google.com/macros/s/.../exec o /api"
+                className="w-full bg-[#FAFBF9] border border-[#DCE3DC] rounded-xl px-3 py-2 text-xs text-[#16241E] focus:outline-none focus:ring-2 focus:ring-[#3E7C6B]"
+              />
             </div>
-          )}
-        </form>
 
-        {/* Instruction guide */}
-        <div className="mt-4 p-4 rounded-xl bg-[#FAFBF9] border border-[#DCE3DC] text-xs text-[#6B776F] space-y-2">
-          <div className="font-semibold text-[#16241E] flex items-center gap-1.5">
-            <FileText className="w-4 h-4 text-[#C9A227]" />
-            <span>¿Cómo conectar tu Google Sheets con Code.gs?</span>
-          </div>
-          <ol className="list-decimal list-inside space-y-1 pl-1 leading-relaxed">
-            <li>Crea una hoja en Google Sheets o sube tu plantilla de Excel.</li>
-            <li>Ve a <b>Extensiones &gt; Apps Script</b> y pega el código incluido en <code>Code.gs</code>.</li>
-            <li>Haz clic en <b>Implementar &gt; Nueva implementación &gt; Aplicación web</b>.</li>
-            <li>En "Quién tiene acceso", selecciona <i>Cualquier usuario</i>.</li>
-            <li>Copia la URL que termina en <code>/exec</code> y pégala en el campo de arriba.</li>
-          </ol>
-        </div>
+            <div className="flex flex-wrap gap-2 pt-1">
+              <button
+                type="submit"
+                className="bg-[#16241E] hover:bg-[#233830] text-white text-xs font-semibold px-4 py-2 rounded-xl transition-colors"
+              >
+                Guardar URL de Apps Script
+              </button>
+              <button
+                type="button"
+                onClick={handleTestConnection}
+                disabled={isTesting}
+                className="border border-[#DCE3DC] hover:bg-[#EEF2EE] text-[#16241E] text-xs font-semibold px-3 py-2 rounded-xl transition-colors disabled:opacity-50"
+              >
+                {isTesting ? 'Probando...' : 'Probar Conexión'}
+              </button>
+              <button
+                type="button"
+                onClick={handleSyncToEndpoint}
+                disabled={isSyncing}
+                className="border border-[#3E7C6B] text-[#3E7C6B] hover:bg-[#3E7C6B]/10 text-xs font-semibold px-3 py-2 rounded-xl transition-colors disabled:opacity-50"
+              >
+                {isSyncing ? 'Sincronizando...' : 'Enviar a Apps Script'}
+              </button>
+            </div>
+
+            {testResult && (
+              <div
+                className={`p-3 rounded-xl text-xs font-medium flex items-center gap-2 ${
+                  testResult.ok
+                    ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                    : 'bg-rose-50 text-rose-800 border border-rose-200'
+                }`}
+              >
+                {testResult.ok ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
+                )}
+                <span>{testResult.message}</span>
+              </div>
+            )}
+
+            {/* Instruction guide */}
+            <div className="mt-3 p-3.5 rounded-xl bg-[#FAFBF9] border border-[#DCE3DC] text-xs text-[#6B776F] space-y-2">
+              <div className="font-semibold text-[#16241E] flex items-center gap-1.5">
+                <FileText className="w-4 h-4 text-[#C9A227]" />
+                <span>¿Cómo conectar tu Google Sheets con Code.gs?</span>
+              </div>
+              <ol className="list-decimal list-inside space-y-1 pl-1 leading-relaxed">
+                <li>Abre tu hoja en Google Sheets.</li>
+                <li>Ve a <b>Extensiones &gt; Apps Script</b> y pega el código de <code>Code.gs</code>.</li>
+                <li>Haz clic en <b>Implementar &gt; Nueva implementación &gt; Aplicación web</b>.</li>
+                <li>En "Quién tiene acceso", selecciona <i>Cualquier usuario</i>.</li>
+                <li>Copia la URL que termina en <code>/exec</code> y pégala arriba.</li>
+              </ol>
+            </div>
+          </form>
+        )}
       </div>
 
       {/* Moneda & Preferencias */}
@@ -297,14 +328,14 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl bg-[#FAFBF9] border border-[#DCE3DC] hover:bg-[#EEF2EE] text-[#6B776F] hover:text-[#16241E] transition-colors"
           >
             <RotateCcw className="w-3.5 h-3.5" />
-            <span>Cargar Datos de Ejemplo</span>
+            <span>Poner Todo en Cero</span>
           </button>
 
           <button
             onClick={onClearAll}
             className="inline-flex items-center gap-1.5 text-xs font-semibold px-3.5 py-2 rounded-xl text-rose-700 bg-rose-50 border border-rose-200 hover:bg-rose-100 transition-colors ml-auto"
           >
-            <span>Borrar Todos los Datos</span>
+            <span>Borrar y Dejar en Cero</span>
           </button>
         </div>
       </div>

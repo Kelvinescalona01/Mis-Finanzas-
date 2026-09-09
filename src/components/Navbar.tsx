@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, History, Target, Settings, Plus } from 'lucide-react';
+import { LayoutDashboard, History, Target, Settings, Plus, FileSpreadsheet } from 'lucide-react';
 import { MESES } from '../data/initialData';
 
 interface NavbarProps {
@@ -8,6 +8,9 @@ interface NavbarProps {
   selectedMonth: string;
   onSelectMonth: (month: string) => void;
   onOpenAddModal: () => void;
+  isLinkedToSheets?: boolean;
+  isSyncing?: boolean;
+  sheetTitle?: string;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
@@ -16,11 +19,14 @@ export const Navbar: React.FC<NavbarProps> = ({
   selectedMonth,
   onSelectMonth,
   onOpenAddModal,
+  isLinkedToSheets,
+  isSyncing,
+  sheetTitle,
 }) => {
   return (
     <>
       {/* Top Header */}
-      <header className="sticky top-0 z-30 bg-[#EEF2EE]/90 backdrop-blur-md border-b border-[#DCE3DC] px-4 md:px-8 py-3.5 flex items-center justify-between">
+      <header className="sticky top-0 z-30 bg-[#EEF2EE]/90 backdrop-blur-md border-b border-[#DCE3DC] px-4 md:px-8 py-3 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-[#16241E] flex items-center justify-center text-[#C9A227] font-semibold text-base shadow-sm">
             $
@@ -35,13 +41,41 @@ export const Navbar: React.FC<NavbarProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2.5">
+        <div className="flex items-center gap-2 sm:gap-2.5">
+          {/* Sheets Real-time Status Badge */}
+          {isLinkedToSheets ? (
+            <button
+              onClick={() => onSelectScreen('settings')}
+              title={`Enlazado en tiempo real con: ${sheetTitle || 'Google Sheets'}`}
+              className="flex items-center gap-1.5 bg-emerald-50/80 border border-emerald-200 px-2.5 py-1.5 rounded-xl text-xs text-emerald-800 font-medium hover:bg-emerald-100 transition-colors shadow-2xs"
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  isSyncing ? 'bg-amber-500 animate-pulse' : 'bg-emerald-600'
+                }`}
+              />
+              <span className="hidden md:inline font-semibold">Sheets en vivo:</span>
+              <span className="truncate max-w-[100px] sm:max-w-[140px]">
+                {isSyncing ? 'Sincronizando...' : sheetTitle || 'Conectado'}
+              </span>
+            </button>
+          ) : (
+            <button
+              onClick={() => onSelectScreen('settings')}
+              title="Vincular con Google Sheets en Drive"
+              className="hidden sm:flex items-center gap-1.5 bg-white border border-[#DCE3DC] px-2.5 py-1.5 rounded-xl text-xs text-[#6B776F] font-medium hover:text-[#16241E] hover:bg-[#FAFBF9] transition-colors shadow-2xs"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 text-[#3E7C6B]" />
+              <span>Vincular Sheets</span>
+            </button>
+          )}
+
           <select
             id="month-selector"
             aria-label="Seleccionar mes"
             value={selectedMonth}
             onChange={(e) => onSelectMonth(e.target.value)}
-            className="bg-white text-[#16241E] font-medium text-sm border border-[#DCE3DC] rounded-xl px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-[#3E7C6B] shadow-xs cursor-pointer"
+            className="bg-white text-[#16241E] font-medium text-xs sm:text-sm border border-[#DCE3DC] rounded-xl px-2.5 sm:px-3 py-1.5 focus:outline-none focus:ring-2 focus:ring-[#3E7C6B] shadow-2xs cursor-pointer"
           >
             {MESES.map((m) => (
               <option key={m} value={m}>

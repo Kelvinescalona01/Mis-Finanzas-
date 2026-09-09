@@ -11,6 +11,8 @@ interface DashboardViewProps {
   onOpenAddModal: () => void;
   onNavigateToHistory: () => void;
   onNavigateToGoals: () => void;
+  onNavigateToSettings?: () => void;
+  isSyncing?: boolean;
 }
 
 export const DashboardView: React.FC<DashboardViewProps> = ({
@@ -21,6 +23,8 @@ export const DashboardView: React.FC<DashboardViewProps> = ({
   onOpenAddModal,
   onNavigateToHistory,
   onNavigateToGoals,
+  onNavigateToSettings,
+  isSyncing,
 }) => {
   const { mes, ingresoTotal, totalGastado, totalAhorrado, restante, actual, regla503020 } = resumen;
   const sym = settings.simboloMoneda;
