@@ -3,6 +3,7 @@
   "appId": "1:524206268106:web:82682afe2095ae41089e33",
   "apiKey": "AIzaSyA2TKnFQIFyuG7pbfMtTEitd3ZIWIM49PY",
   "authDomain": "gen-lang-client-0687908103.firebaseapp.com",
+  "firestoreDatabaseId": "ai-studio-misfinanzas-3d91ec07-d52b-455e-a0fe-7cf7912ea651",
   "storageBucket": "gen-lang-client-0687908103.firebasestorage.app",
   "messagingSenderId": "524206268106",
   "measurementId": "",

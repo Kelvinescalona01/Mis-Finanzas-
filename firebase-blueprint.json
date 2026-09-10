@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MisFinanzas Firebase Schema Blueprint",
+  "entities": {
+    "movimiento": {
+      "collection": "users/{userId}/movimientos",
+      "description": "Financial transaction movements for each user",
+      "fields": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "fecha": { "type": "string", "maxLength": 32 },
+        "mes": { "type": "string", "maxLength": 32 },
+        "tipo": { "type": "string", "maxLength": 32 },
+        "concepto": { "type": "string", "maxLength": 200 },
+        "necesidad": { "type": "string", "maxLength": 32 },
+        "monto": { "type": "number" },
+        "notas": { "type": "string", "maxLength": 500, "optional": true },
+        "categoriaDetalle": { "type": "string", "maxLength": 50, "optional": true },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "userId", "fecha", "mes", "tipo", "concepto", "necesidad", "monto"]
+    },
+    "meta": {
+      "collection": "users/{userId}/metas",
+      "description": "Savings goals for each user",
+      "fields": {
+        "id": { "type": "string", "maxLength": 128 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "nombre": { "type": "string", "maxLength": 150 },
+        "objetivo": { "type": "number" },
+        "acumulado": { "type": "number" },
+        "color": { "type": "string", "maxLength": 32 },
+        "fechaLimite": { "type": "string", "maxLength": 32, "optional": true },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["id", "userId", "nombre", "objetivo", "acumulado", "color"]
+    },
+    "settings": {
+      "collection": "users/{userId}/settings",
+      "description": "User preferences, Sheets configuration and Firebase sync",
+      "fields": {
+        "userId": { "type": "string", "maxLength": 128 },
+        "moneda": { "type": "string", "maxLength": 10 },
+        "simboloMoneda": { "type": "string", "maxLength": 10 },
+        "sheetsEndpoint": { "type": "string", "maxLength": 500, "optional": true },
+        "googleSheetId": { "type": "string", "maxLength": 256, "optional": true },
+        "googleSheetName": { "type": "string", "maxLength": 100, "optional": true },
+        "googleSpreadsheetTitle": { "type": "string", "maxLength": 200, "optional": true },
+        "googleDriveWebViewLink": { "type": "string", "maxLength": 500, "optional": true },
+        "autoSync": { "type": "boolean" },
+        "lastSyncedAt": { "type": "string", "maxLength": 64, "optional": true },
+        "updatedAt": { "type": "string", "maxLength": 64 }
+      },
+      "required": ["userId", "moneda", "simboloMoneda", "autoSync"]
+    }
+  }
+}

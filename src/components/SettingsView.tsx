@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
-import { Settings, RefreshCw, CheckCircle2, AlertCircle, FileText, Download, Upload, RotateCcw, ChevronDown, ChevronUp } from 'lucide-react';
+import { Settings, RefreshCw, CheckCircle2, AlertCircle, FileText, Download, Upload, RotateCcw, ChevronDown, ChevronUp, Database, Cloud } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { AppSettings, Movimiento, MetaAhorro } from '../types';
 import { GoogleSheetsIntegration } from './GoogleSheetsIntegration';
+import firebaseConfig from '../../firebase-applet-config.json';
 
 interface SettingsViewProps {
   settings: AppSettings;
@@ -257,6 +258,50 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
             </div>
           </form>
         )}
+      </div>
+
+      {/* Base de Datos Firebase Firestore */}
+      <div className="bg-white border border-[#DCE3DC] rounded-2xl p-5 md:p-6 shadow-xs space-y-3.5">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <div className="w-8 h-8 rounded-xl bg-amber-500/10 border border-amber-500/20 flex items-center justify-center text-amber-600">
+              <Database className="w-4 h-4" />
+            </div>
+            <div>
+              <h2 className="font-display text-base font-bold text-[#16241E] flex items-center gap-2">
+                <span>Firebase Firestore</span>
+                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  Conectado
+                </span>
+              </h2>
+              <p className="text-xs text-[#6B776F]">
+                Base de datos en la nube provisionada y sincronizada en tiempo real.
+              </p>
+            </div>
+          </div>
+        </div>
+
+        <div className="bg-[#FAFBF9] border border-[#DCE3DC] rounded-xl p-3.5 space-y-2 text-xs">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+            <span className="text-[#6B776F] font-medium">Proyecto Firebase:</span>
+            <span className="font-mono text-[11px] text-[#16241E] font-semibold">{firebaseConfig.projectId}</span>
+          </div>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-t border-[#DCE3DC]/50 pt-2">
+            <span className="text-[#6B776F] font-medium">ID de Base de Datos:</span>
+            <span className="font-mono text-[11px] text-[#3E7C6B] font-semibold truncate max-w-xs">{firebaseConfig.firestoreDatabaseId}</span>
+          </div>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-t border-[#DCE3DC]/50 pt-2">
+            <span className="text-[#6B776F] font-medium">Estado de Autenticación:</span>
+            <span className="text-[#16241E] font-medium">
+              {user ? (
+                <span className="text-emerald-700 font-semibold">Sesión activa ({user.email})</span>
+              ) : (
+                <span className="text-amber-700">Inicia sesión con Google para sincronizar tus movimientos en la nube</span>
+              )}
+            </span>
+          </div>
+        </div>
       </div>
 
       {/* Moneda & Preferencias */}

@@ -5,6 +5,18 @@ import { MESES, DEFAULT_SETTINGS, INITIAL_METAS, getInitialMovements } from './d
 import { calculateResumen } from './utils/finance';
 import { initAuth, getAccessToken } from './utils/firebaseAuth';
 import { appendMovementToGoogleSheet, readMovementsFromGoogleSheet } from './utils/googleSheetsService';
+import {
+  subscribeUserMovimientos,
+  subscribeUserMetas,
+  subscribeUserSettings,
+  saveUserMovimiento,
+  deleteUserMovimiento,
+  saveUserMeta,
+  deleteUserMeta,
+  saveUserSettings,
+  batchSaveUserMovimientos,
+  batchClearUserMovimientos,
+} from './utils/firestoreService';
 import { Navbar } from './components/Navbar';
 import { DashboardView } from './components/DashboardView';
 import { HistoryView } from './components/HistoryView';
@@ -122,6 +134,37 @@ export const App: React.FC = () => {
     }
   }, [settings]);
 
+  // Real-time Firestore sync when user is authenticated
+  useEffect(() => {
+    if (!user) return;
+
+    // Movimientos listener
+    const unsubMovs = subscribeUserMovimientos(user.uid, (firestoreMovs) => {
+      // If Firestore has stored records for this user, keep local state in sync
+      if (firestoreMovs.length > 0) {
+        setMovimientos(firestoreMovs);
+      }
+    });
+
+    // Metas listener
+    const unsubMetas = subscribeUserMetas(user.uid, (firestoreMetas) => {
+      if (firestoreMetas.length > 0) {
+        setMetas(firestoreMetas);
+      }
+    });
+
+    // Settings listener
+    const unsubSettings = subscribeUserSettings(user.uid, (firestoreSettings) => {
+      setSettings((prev) => ({ ...prev, ...firestoreSettings }));
+    });
+
+    return () => {
+      unsubMovs();
+      unsubMetas();
+      unsubSettings();
+    };
+  }, [user]);
+
   // If connected to a Google Sheet, pull latest records from Drive so app mirrors the spreadsheet
   useEffect(() => {
     if (!user || !settings.googleSheetId) return;
@@ -138,6 +181,11 @@ export const App: React.FC = () => {
         );
         if (isMounted) {
           setMovimientos(sheetMovements);
+          if (user && sheetMovements.length > 0) {
+            batchSaveUserMovimientos(user.uid, sheetMovements).catch((err) =>
+              console.warn('Error mirroring sheets to Firestore:', err)
+            );
+          }
           setSettings((prev) => ({
             ...prev,
             lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -179,6 +227,11 @@ export const App: React.FC = () => {
       setMovimientos((prev) =>
         prev.map((m) => (m.id === editId ? updatedMovement : m))
       );
+      if (user) {
+        saveUserMovimiento(user.uid, updatedMovement).catch((err) =>
+          console.warn('Error saving movement to Firestore:', err)
+        );
+      }
       showToast('Movimiento actualizado', 'success');
 
       // Real-time sync if connected to Google Sheets
@@ -215,6 +268,11 @@ export const App: React.FC = () => {
         id: `mov-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       };
       setMovimientos((prev) => [...prev, newMovement]);
+      if (user) {
+        saveUserMovimiento(user.uid, newMovement).catch((err) =>
+          console.warn('Error saving new movement to Firestore:', err)
+        );
+      }
       showToast('Movimiento guardado', 'success');
 
       // Real-time sync if connected to Google Sheets
@@ -272,11 +330,21 @@ export const App: React.FC = () => {
       concepto: `${mov.concepto} (Copia)`,
     };
     setMovimientos((prev) => [...prev, duplicate]);
+    if (user) {
+      saveUserMovimiento(user.uid, duplicate).catch((err) =>
+        console.warn('Error saving duplicate to Firestore:', err)
+      );
+    }
     showToast('Movimiento duplicado', 'info');
   };
 
   const handleDeleteMovement = (id: string) => {
     setMovimientos((prev) => prev.filter((m) => m.id !== id));
+    if (user) {
+      deleteUserMovimiento(user.uid, id).catch((err) =>
+        console.warn('Error deleting movement from Firestore:', err)
+      );
+    }
     showToast('Movimiento eliminado', 'info');
   };
 
@@ -289,11 +357,21 @@ export const App: React.FC = () => {
       }
       return [...prev, goal];
     });
+    if (user) {
+      saveUserMeta(user.uid, goal).catch((err) =>
+        console.warn('Error saving goal to Firestore:', err)
+      );
+    }
     showToast('Meta de ahorro guardada', 'success');
   };
 
   const handleDeleteGoal = (id: string) => {
     setMetas((prev) => prev.filter((g) => g.id !== id));
+    if (user) {
+      deleteUserMeta(user.uid, id).catch((err) =>
+        console.warn('Error deleting goal from Firestore:', err)
+      );
+    }
     showToast('Meta eliminada', 'info');
   };
 
@@ -301,8 +379,9 @@ export const App: React.FC = () => {
     const goal = metas.find((g) => g.id === goalId);
     if (!goal) return;
 
+    const updatedGoal: MetaAhorro = { ...goal, acumulado: goal.acumulado + amount };
     setMetas((prev) =>
-      prev.map((g) => (g.id === goalId ? { ...g, acumulado: g.acumulado + amount } : g))
+      prev.map((g) => (g.id === goalId ? updatedGoal : g))
     );
 
     // Also register an Ahorro movement
@@ -321,6 +400,15 @@ export const App: React.FC = () => {
       notas: 'Aporte registrado desde Metas',
     };
     setMovimientos((prev) => [...prev, newMov]);
+
+    if (user) {
+      saveUserMeta(user.uid, updatedGoal).catch((err) =>
+        console.warn('Error saving goal progress to Firestore:', err)
+      );
+      saveUserMovimiento(user.uid, newMov).catch((err) =>
+        console.warn('Error saving goal movement to Firestore:', err)
+      );
+    }
     showToast(`Se agregaron $${amount} a ${goal.nombre}`, 'success');
   };
 
@@ -334,6 +422,11 @@ export const App: React.FC = () => {
     if (window.confirm('¿Seguro que deseas borrar todos los movimientos y metas y dejarlos en cero?')) {
       setMovimientos([]);
       setMetas([]);
+      if (user) {
+        batchClearUserMovimientos(user.uid).catch((err) =>
+          console.warn('Error clearing movements in Firestore:', err)
+        );
+      }
       showToast('Todos los datos han sido borrados (en cero)', 'info');
     }
   };
@@ -341,12 +434,31 @@ export const App: React.FC = () => {
   const handleImportData = (data: { movimientos: Movimiento[]; metas: MetaAhorro[] }) => {
     if (data.movimientos) setMovimientos(data.movimientos);
     if (data.metas) setMetas(data.metas);
+    if (user && data.movimientos && data.movimientos.length > 0) {
+      batchSaveUserMovimientos(user.uid, data.movimientos).catch((err) =>
+        console.warn('Error saving imported data to Firestore:', err)
+      );
+    }
   };
 
   const handleImportMovements = (importedMovements: Movimiento[]) => {
     setMovimientos(importedMovements);
+    if (user && importedMovements.length > 0) {
+      batchSaveUserMovimientos(user.uid, importedMovements).catch((err) =>
+        console.warn('Error saving imported movements to Firestore:', err)
+      );
+    }
     if (importedMovements.length > 0) {
       showToast(`Se cargaron ${importedMovements.length} movimientos desde Google Sheets`, 'success');
+    }
+  };
+
+  const handleUpdateSettings = (newSettings: AppSettings) => {
+    setSettings(newSettings);
+    if (user) {
+      saveUserSettings(user.uid, newSettings).catch((err) =>
+        console.warn('Error saving settings to Firestore:', err)
+      );
     }
   };
 
@@ -413,7 +525,7 @@ export const App: React.FC = () => {
         {currentScreen === 'settings' && (
           <SettingsView
             settings={settings}
-            onUpdateSettings={setSettings}
+            onUpdateSettings={handleUpdateSettings}
             movimientos={movimientos}
             metas={metas}
             onImportData={handleImportData}

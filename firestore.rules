@@ -1,0 +1,93 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidMovimiento(data, userId) {
+      return data.userId == userId
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.fecha is string && data.fecha.size() > 0 && data.fecha.size() <= 32
+        && data.mes is string && data.mes.size() > 0 && data.mes.size() <= 32
+        && data.tipo is string && data.tipo.size() > 0 && data.tipo.size() <= 32
+        && data.concepto is string && data.concepto.size() > 0 && data.concepto.size() <= 200
+        && data.necesidad is string && data.necesidad.size() > 0 && data.necesidad.size() <= 32
+        && data.monto is number
+        && (!('notas' in data) || (data.notas is string && data.notas.size() <= 500))
+        && (!('categoriaDetalle' in data) || (data.categoriaDetalle is string && data.categoriaDetalle.size() <= 50));
+    }
+
+    function isValidMeta(data, userId) {
+      return data.userId == userId
+        && data.id is string && data.id.size() > 0 && data.id.size() <= 128
+        && data.nombre is string && data.nombre.size() > 0 && data.nombre.size() <= 150
+        && data.objetivo is number
+        && data.acumulado is number
+        && data.color is string && data.color.size() > 0 && data.color.size() <= 32
+        && (!('fechaLimite' in data) || (data.fechaLimite is string && data.fechaLimite.size() <= 32));
+    }
+
+    function isValidSettings(data, userId) {
+      return data.userId == userId
+        && data.moneda is string && data.moneda.size() > 0 && data.moneda.size() <= 10
+        && data.simboloMoneda is string && data.simboloMoneda.size() > 0 && data.simboloMoneda.size() <= 10
+        && data.autoSync is bool
+        && (!('sheetsEndpoint' in data) || (data.sheetsEndpoint is string && data.sheetsEndpoint.size() <= 500))
+        && (!('googleSheetId' in data) || (data.googleSheetId is string && data.googleSheetId.size() <= 256))
+        && (!('googleSheetName' in data) || (data.googleSheetName is string && data.googleSheetName.size() <= 100))
+        && (!('googleSpreadsheetTitle' in data) || (data.googleSpreadsheetTitle is string && data.googleSpreadsheetTitle.size() <= 200))
+        && (!('googleDriveWebViewLink' in data) || (data.googleDriveWebViewLink is string && data.googleDriveWebViewLink.size() <= 500))
+        && (!('lastSyncedAt' in data) || (data.lastSyncedAt is string && data.lastSyncedAt.size() <= 64));
+    }
+
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // User data trees
+    match /users/{userId} {
+      allow read, write: if false;
+
+      // Movimientos subcollection
+      match /movimientos/{movementId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(movementId) && isValidMovimiento(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(movementId) && isValidMovimiento(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(movementId);
+      }
+
+      // Metas de ahorro subcollection
+      match /metas/{metaId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(metaId) && isValidMeta(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(metaId) && isValidMeta(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(metaId);
+      }
+
+      // Settings subcollection
+      match /settings/{settingId} {
+        allow get, list: if isOwner(userId);
+        allow create: if isOwner(userId) && isValidId(settingId) && isValidSettings(incoming(), userId);
+        allow update: if isOwner(userId) && isValidId(settingId) && isValidSettings(incoming(), userId);
+        allow delete: if isOwner(userId) && isValidId(settingId);
+      }
+    }
+  }
+}
