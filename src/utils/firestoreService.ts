@@ -117,7 +117,7 @@ export async function saveUserMovimiento(userId: string, mov: Movimiento): Promi
     mes: (mov.mes || 'Enero').slice(0, 32),
     tipo: (mov.tipo || 'GastoVariable').slice(0, 32),
     concepto: (mov.concepto || 'Sin concepto').slice(0, 200),
-    necesidad: (mov.necesidad || 'Necesidades').slice(0, 32),
+    necesidad: mov.tipo === 'Ingreso' ? '' : (mov.necesidad || 'Necesidades').slice(0, 32),
     monto: Number(mov.monto) || 0,
     updatedAt: new Date().toISOString(),
   };
@@ -308,7 +308,7 @@ export async function batchSaveUserMovimientos(userId: string, movs: Movimiento[
           mes: (m.mes || 'Enero').slice(0, 32),
           tipo: (m.tipo || 'GastoVariable').slice(0, 32),
           concepto: (m.concepto || 'Sin concepto').slice(0, 200),
-          necesidad: (m.necesidad || 'Necesidades').slice(0, 32),
+          necesidad: m.tipo === 'Ingreso' ? '' : (m.necesidad || 'Necesidades').slice(0, 32),
           monto: Number(m.monto) || 0,
           updatedAt: new Date().toISOString(),
         };

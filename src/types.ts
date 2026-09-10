@@ -78,5 +78,6 @@ export interface AppSettings {
   googleSheetName?: string;
   googleSpreadsheetTitle?: string;
   googleDriveWebViewLink?: string;
+  fileMimeType?: string;
   lastSyncedAt?: string;
 }

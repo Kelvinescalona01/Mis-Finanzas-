@@ -4,7 +4,7 @@ import { Movimiento, MetaAhorro, AppSettings } from './types';
 import { MESES, DEFAULT_SETTINGS, INITIAL_METAS, getInitialMovements } from './data/initialData';
 import { calculateResumen } from './utils/finance';
 import { initAuth, getAccessToken } from './utils/firebaseAuth';
-import { appendMovementToGoogleSheet, readMovementsFromGoogleSheet } from './utils/googleSheetsService';
+import { readAnySpreadsheet, writeAnySpreadsheet } from './utils/googleSheetsService';
 import {
   subscribeUserMovimientos,
   subscribeUserMetas,
@@ -44,23 +44,14 @@ export const App: React.FC = () => {
     return () => unsubscribe();
   }, []);
 
-  // Data state with clean initial state (all months start at zero unless Google Sheets has data)
+  // Data state with clean initial state
   const [movimientos, setMovimientos] = useState<Movimiento[]>(() => {
     try {
       const saved = localStorage.getItem('mis_finanzas_movimientos');
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          // Detect and wipe old mock sample items
-          const hasOldMockData = parsed.some(
-            (m: any) =>
-              (typeof m.id === 'string' && m.id.startsWith('mov-')) ||
-              m.concepto === 'Sueldo Quincenal (1ra Quincena)'
-          );
-          if (!hasOldMockData) {
-            return parsed;
-          }
-          localStorage.removeItem('mis_finanzas_movimientos');
+          return parsed;
         }
       }
     } catch (e) {
@@ -75,15 +66,7 @@ export const App: React.FC = () => {
       if (saved) {
         const parsed = JSON.parse(saved);
         if (Array.isArray(parsed)) {
-          const hasOldMockMetas = parsed.some(
-            (m: any) =>
-              (typeof m.id === 'string' && m.id.startsWith('meta-')) ||
-              m.nombre?.includes('Fondo de Emergencia (6 meses)')
-          );
-          if (!hasOldMockMetas) {
-            return parsed;
-          }
-          localStorage.removeItem('mis_finanzas_metas');
+          return parsed;
         }
       }
     } catch (e) {
@@ -165,7 +148,7 @@ export const App: React.FC = () => {
     };
   }, [user]);
 
-  // If connected to a Google Sheet, pull latest records from Drive so app mirrors the spreadsheet
+  // If connected to a Google Sheet or Excel file in Drive, pull latest records so app mirrors the spreadsheet
   useEffect(() => {
     if (!user || !settings.googleSheetId) return;
 
@@ -174,17 +157,20 @@ export const App: React.FC = () => {
     getAccessToken()
       .then(async (token) => {
         if (!token || !settings.googleSheetId || !isMounted) return;
-        const sheetMovements = await readMovementsFromGoogleSheet(
+        const sheetMovements = await readAnySpreadsheet(
           token,
           settings.googleSheetId,
+          settings.fileMimeType || settings.googleSpreadsheetTitle,
           settings.googleSheetName || 'Movimientos'
         );
         if (isMounted) {
-          setMovimientos(sheetMovements);
-          if (user && sheetMovements.length > 0) {
-            batchSaveUserMovimientos(user.uid, sheetMovements).catch((err) =>
-              console.warn('Error mirroring sheets to Firestore:', err)
-            );
+          if (sheetMovements.length > 0) {
+            setMovimientos(sheetMovements);
+            if (user) {
+              batchSaveUserMovimientos(user.uid, sheetMovements).catch((err) =>
+                console.warn('Error mirroring sheets/Excel to Firestore:', err)
+              );
+            }
           }
           setSettings((prev) => ({
             ...prev,
@@ -193,7 +179,7 @@ export const App: React.FC = () => {
         }
       })
       .catch((err) => {
-        console.warn('Startup sync from Google Sheets:', err);
+        console.warn('Startup sync from Google Sheets/Excel:', err);
       })
       .finally(() => {
         if (isMounted) setIsSyncing(false);
@@ -202,7 +188,7 @@ export const App: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [user, settings.googleSheetId, settings.googleSheetName]);
+  }, [user, settings.googleSheetId, settings.googleSheetName, settings.fileMimeType, settings.googleSpreadsheetTitle]);
 
   // Toast dispatcher
   const showToast = (message: string, type: 'success' | 'error' | 'info' = 'success') => {
@@ -220,89 +206,125 @@ export const App: React.FC = () => {
   // Financial summary for selected month
   const resumen = calculateResumen(movimientos, selectedMonth);
 
+  // Real-time auto-sync helper for both Excel and Google Sheets
+  const syncToDriveIfEnabled = (updatedList: Movimiento[]) => {
+    if (settings.autoSync && settings.googleSheetId) {
+      setIsSyncing(true);
+      getAccessToken().then((token) => {
+        if (token && settings.googleSheetId) {
+          writeAnySpreadsheet(
+            token,
+            settings.googleSheetId,
+            updatedList,
+            settings.fileMimeType || settings.googleSpreadsheetTitle,
+            settings.googleSheetName || 'Movimientos'
+          )
+            .then(() => {
+              setSettings((prev) => ({
+                ...prev,
+                lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+              }));
+            })
+            .catch((err) => {
+              console.warn('Error syncing movements to Drive/Sheets:', err);
+            })
+            .finally(() => {
+              setIsSyncing(false);
+            });
+        } else {
+          setIsSyncing(false);
+        }
+      });
+    }
+  };
+
+  // Direct manual sync triggered from Dashboard or elsewhere
+  const handleManualSync = async () => {
+    if (!settings.googleSheetId) {
+      showToast('Vincula tu archivo de Drive en la pestaña de Ajustes', 'info');
+      setCurrentScreen('settings');
+      return;
+    }
+    setIsSyncing(true);
+    try {
+      const token = await getAccessToken();
+      if (!token) {
+        showToast('Inicia sesión con Google para sincronizar con Drive', 'error');
+        setIsSyncing(false);
+        return;
+      }
+      const remote = await readAnySpreadsheet(
+        token,
+        settings.googleSheetId,
+        settings.fileMimeType || settings.googleSpreadsheetTitle,
+        settings.googleSheetName || 'Movimientos'
+      );
+
+      // Merge without duplicates
+      const map = new Map<string, Movimiento>();
+      movimientos.forEach((m) => map.set(m.id, m));
+      remote.forEach((m) => map.set(m.id, m));
+      const merged = Array.from(map.values());
+
+      setMovimientos(merged);
+
+      // Update Drive/Excel
+      await writeAnySpreadsheet(
+        token,
+        settings.googleSheetId,
+        merged,
+        settings.fileMimeType || settings.googleSpreadsheetTitle,
+        settings.googleSheetName || 'Movimientos'
+      );
+
+      // Update Firestore if logged in
+      if (user) {
+        await batchSaveUserMovimientos(user.uid, merged);
+      }
+
+      const timestamp = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const updatedSettings = { ...settings, lastSyncedAt: timestamp };
+      setSettings(updatedSettings);
+      if (user) {
+        saveUserSettings(user.uid, updatedSettings).catch(console.warn);
+      }
+
+      showToast(`¡Sincronizado con éxito! (${merged.length} movimientos)`, 'success');
+    } catch (err: any) {
+      console.error('Manual sync error:', err);
+      showToast('Error al sincronizar: ' + (err.message || 'Verifica tu conexión'), 'error');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
   // Handlers for movements
   const handleSaveMovement = (data: Omit<Movimiento, 'id'>, editId?: string) => {
     if (editId) {
       const updatedMovement: Movimiento = { ...data, id: editId };
-      setMovimientos((prev) =>
-        prev.map((m) => (m.id === editId ? updatedMovement : m))
-      );
+      const updatedList = movimientos.map((m) => (m.id === editId ? updatedMovement : m));
+      setMovimientos(updatedList);
       if (user) {
         saveUserMovimiento(user.uid, updatedMovement).catch((err) =>
           console.warn('Error saving movement to Firestore:', err)
         );
       }
       showToast('Movimiento actualizado', 'success');
-
-      // Real-time sync if connected to Google Sheets
-      if (settings.autoSync && settings.googleSheetId) {
-        setIsSyncing(true);
-        getAccessToken().then((token) => {
-          if (token && settings.googleSheetId) {
-            appendMovementToGoogleSheet(
-              token,
-              settings.googleSheetId,
-              updatedMovement,
-              settings.googleSheetName || 'Movimientos'
-            )
-              .then(() => {
-                setSettings((prev) => ({
-                  ...prev,
-                  lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-                }));
-              })
-              .catch((err) => {
-                console.warn('Error syncing updated movement to Google Sheets:', err);
-              })
-              .finally(() => {
-                setIsSyncing(false);
-              });
-          } else {
-            setIsSyncing(false);
-          }
-        });
-      }
+      syncToDriveIfEnabled(updatedList);
     } else {
       const newMovement: Movimiento = {
         ...data,
         id: `mov-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
       };
-      setMovimientos((prev) => [...prev, newMovement]);
+      const updatedList = [...movimientos, newMovement];
+      setMovimientos(updatedList);
       if (user) {
         saveUserMovimiento(user.uid, newMovement).catch((err) =>
           console.warn('Error saving new movement to Firestore:', err)
         );
       }
       showToast('Movimiento guardado', 'success');
-
-      // Real-time sync if connected to Google Sheets
-      if (settings.autoSync && settings.googleSheetId) {
-        setIsSyncing(true);
-        getAccessToken().then((token) => {
-          if (token && settings.googleSheetId) {
-            appendMovementToGoogleSheet(
-              token,
-              settings.googleSheetId,
-              newMovement,
-              settings.googleSheetName || 'Movimientos'
-            )
-              .then(() => {
-                setSettings((prev) => ({
-                  ...prev,
-                  lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
-                }));
-              })
-              .catch((err) => {
-                console.warn('Error syncing new movement to Google Sheets:', err);
-              })
-              .finally(() => {
-                setIsSyncing(false);
-              });
-          } else {
-            setIsSyncing(false);
-          }
-        });
-      }
+      syncToDriveIfEnabled(updatedList);
 
       // If movement month is different from current, switch to it to show the change
       if (data.mes && data.mes !== selectedMonth) {
@@ -329,23 +351,27 @@ export const App: React.FC = () => {
       mes: selectedMonth,
       concepto: `${mov.concepto} (Copia)`,
     };
-    setMovimientos((prev) => [...prev, duplicate]);
+    const updatedList = [...movimientos, duplicate];
+    setMovimientos(updatedList);
     if (user) {
       saveUserMovimiento(user.uid, duplicate).catch((err) =>
         console.warn('Error saving duplicate to Firestore:', err)
       );
     }
     showToast('Movimiento duplicado', 'info');
+    syncToDriveIfEnabled(updatedList);
   };
 
   const handleDeleteMovement = (id: string) => {
-    setMovimientos((prev) => prev.filter((m) => m.id !== id));
+    const updatedList = movimientos.filter((m) => m.id !== id);
+    setMovimientos(updatedList);
     if (user) {
       deleteUserMovimiento(user.uid, id).catch((err) =>
         console.warn('Error deleting movement from Firestore:', err)
       );
     }
     showToast('Movimiento eliminado', 'info');
+    syncToDriveIfEnabled(updatedList);
   };
 
   // Handlers for goals
@@ -485,7 +511,10 @@ export const App: React.FC = () => {
             movimientos={movimientos}
             metas={metas}
             settings={settings}
+            selectedMonth={selectedMonth}
+            onSelectMonth={setSelectedMonth}
             isSyncing={isSyncing}
+            onTriggerSync={handleManualSync}
             onOpenAddModal={() => {
               setEditingMovement(null);
               setIsAddModalOpen(true);

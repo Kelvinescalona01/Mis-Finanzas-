@@ -1,3 +1,4 @@
+import * as XLSX from 'xlsx';
 import { Movimiento, GoogleDriveFile } from '../types';
 
 export const SPREADSHEET_SCOPES = [
@@ -9,24 +10,43 @@ export const SPREADSHEET_SCOPES = [
 ];
 
 /**
+ * Checks whether a given file, MIME type, or filename is Microsoft Excel (.xlsx / .xls)
+ */
+export function isExcelFile(fileOrMime: { mimeType?: string; name?: string } | string): boolean {
+  if (typeof fileOrMime === 'string') {
+    const lower = fileOrMime.toLowerCase();
+    return (
+      lower.includes('spreadsheetml') ||
+      lower.includes('wps-office.xlsx') ||
+      lower.endsWith('.xlsx') ||
+      lower.endsWith('.xls')
+    );
+  }
+  const mime = (fileOrMime.mimeType || '').toLowerCase();
+  const name = (fileOrMime.name || '').toLowerCase();
+  return (
+    mime.includes('spreadsheetml') ||
+    mime.includes('wps-office.xlsx') ||
+    name.endsWith('.xlsx') ||
+    name.endsWith('.xls')
+  );
+}
+
+/**
  * Extracts a Google Spreadsheet ID from either a full URL or a raw ID string.
  */
 export function extractSpreadsheetId(input: string): string {
   if (!input) return '';
   const trimmed = input.trim();
-  // Matching /spreadsheets/d/([a-zA-Z0-9-_]+)
   const matchSheets = trimmed.match(/\/spreadsheets\/d\/([a-zA-Z0-9-_]+)/);
   if (matchSheets && matchSheets[1]) return matchSheets[1];
 
-  // Matching /file/d/([a-zA-Z0-9-_]+)
   const matchDrive = trimmed.match(/\/file\/d\/([a-zA-Z0-9-_]+)/);
   if (matchDrive && matchDrive[1]) return matchDrive[1];
 
-  // Matching id=([a-zA-Z0-9-_]+)
   const matchQuery = trimmed.match(/[?&]id=([a-zA-Z0-9-_]+)/);
   if (matchQuery && matchQuery[1]) return matchQuery[1];
 
-  // If it's a bare ID (alphanumeric and hyphens/underscores, usually > 20 chars)
   if (/^[a-zA-Z0-9-_]{20,}$/.test(trimmed)) {
     return trimmed;
   }
@@ -35,11 +55,11 @@ export function extractSpreadsheetId(input: string): string {
 }
 
 /**
- * Lists spreadsheets from the user's Google Drive.
+ * Lists spreadsheets and Excel files from the user's Google Drive.
  */
 export async function listDriveSpreadsheets(token: string): Promise<GoogleDriveFile[]> {
   const query = encodeURIComponent(
-    "(mimeType='application/vnd.google-apps.spreadsheet' or mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or name contains 'Presupuesto' or name contains 'Finanzas') and trashed=false"
+    "(mimeType='application/vnd.google-apps.spreadsheet' or mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' or name contains 'Presupuesto' or name contains 'Finanzas' or name contains '.xlsx') and trashed=false"
   );
   const url = `https://www.googleapis.com/drive/v3/files?q=${query}&fields=files(id,name,mimeType,modifiedTime,webViewLink)&orderBy=modifiedTime desc&pageSize=30`;
 
@@ -58,7 +78,6 @@ export async function listDriveSpreadsheets(token: string): Promise<GoogleDriveF
   const data = await res.json();
   const files: GoogleDriveFile[] = data.files || [];
 
-  // Sort with priority to Presupuesto_Mensual_50_30_20
   files.sort((a, b) => {
     const aMatch = a.name.toLowerCase().includes('presupuesto_mensual_50_30_20');
     const bMatch = b.name.toLowerCase().includes('presupuesto_mensual_50_30_20');
@@ -71,7 +90,7 @@ export async function listDriveSpreadsheets(token: string): Promise<GoogleDriveF
 }
 
 /**
- * Specifically locates "Presupuesto_Mensual_50_30_20.xlsx" or any variations in Google Drive.
+ * Specifically locates "Presupuesto_Mensual_50_30_20.xlsx" or variations in Google Drive.
  */
 export async function searchPresupuestoFileInDrive(token: string): Promise<{
   targetFile: GoogleDriveFile | null;
@@ -97,7 +116,6 @@ export async function searchPresupuestoFileInDrive(token: string): Promise<{
   const data = await res.json();
   const files: GoogleDriveFile[] = data.files || [];
 
-  // Look for exact match or closest match
   const exactMatch = files.find(
     (f) =>
       f.name.toLowerCase().trim() === 'presupuesto_mensual_50_30_20.xlsx' ||
@@ -114,10 +132,347 @@ export async function searchPresupuestoFileInDrive(token: string): Promise<{
   };
 }
 
+export const MONTH_NAMES = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
+];
+
+export function normalizeMonth(rawMes: string, rawFecha: string): string {
+  const clean = String(rawMes || '').trim().toLowerCase();
+  const map: Record<string, string> = {
+    ene: 'Enero', enero: 'Enero', '1': 'Enero', '01': 'Enero',
+    feb: 'Febrero', febrero: 'Febrero', '2': 'Febrero', '02': 'Febrero',
+    mar: 'Marzo', marzo: 'Marzo', '3': 'Marzo', '03': 'Marzo',
+    abr: 'Abril', abril: 'Abril', '4': 'Abril', '04': 'Abril',
+    may: 'Mayo', mayo: 'Mayo', '5': 'Mayo', '05': 'Mayo',
+    jun: 'Junio', junio: 'Junio', '6': 'Junio', '06': 'Junio',
+    jul: 'Julio', julio: 'Julio', '7': 'Julio', '07': 'Julio',
+    ago: 'Agosto', agosto: 'Agosto', '8': 'Agosto', '08': 'Agosto',
+    sep: 'Septiembre', set: 'Septiembre', septiembre: 'Septiembre', '9': 'Septiembre', '09': 'Septiembre',
+    oct: 'Octubre', octubre: 'Octubre', '10': 'Octubre',
+    nov: 'Noviembre', noviembre: 'Noviembre', '11': 'Noviembre',
+    dic: 'Diciembre', diciembre: 'Diciembre', '12': 'Diciembre',
+  };
+
+  if (map[clean]) return map[clean];
+
+  if (rawFecha) {
+    const isoMatch = rawFecha.match(/^\d{4}[-/](\d{1,2})[-/]\d{1,2}/);
+    if (isoMatch) {
+      const idx = parseInt(isoMatch[1], 10) - 1;
+      if (idx >= 0 && idx < 12) return MONTH_NAMES[idx];
+    }
+    const latMatch = rawFecha.match(/^\d{1,2}[-/](\d{1,2})[-/]\d{2,4}/);
+    if (latMatch) {
+      const idx = parseInt(latMatch[1], 10) - 1;
+      if (idx >= 0 && idx < 12) return MONTH_NAMES[idx];
+    }
+  }
+
+  return 'Enero';
+}
+
 /**
- * Prepares an Excel .xlsx file or Google Spreadsheet in Drive for real-time sync.
- * If the file is a raw Excel binary, it safely creates/converts a Google Spreadsheet copy
- * in Drive so the Google Sheets API can perform real-time appends and reads.
+ * Parses raw 2D array of spreadsheet/Excel rows into Movimiento items.
+ * Intelligently detects header columns and row offsets.
+ */
+export function parseRawRowsToMovements(rows: any[][]): Movimiento[] {
+  if (!rows || rows.length === 0) return [];
+
+  let headerIndex = -1;
+  let dateCol = 0;
+  let monthCol = 1;
+  let typeCol = 2;
+  let conceptCol = 3;
+  let needCol = 4;
+  let amountCol = 5;
+  let notesCol = 6;
+  let idCol = 7;
+
+  // Search first 12 rows for header keywords
+  for (let r = 0; r < Math.min(rows.length, 12); r++) {
+    const row = rows[r];
+    if (!Array.isArray(row)) continue;
+    const rowStr = row.map((cell) => String(cell || '').toLowerCase()).join(' ');
+    if (
+      (rowStr.includes('fecha') || rowStr.includes('date')) &&
+      (rowStr.includes('monto') || rowStr.includes('amount') || rowStr.includes('importe') || rowStr.includes('concepto'))
+    ) {
+      headerIndex = r;
+      row.forEach((cell, idx) => {
+        const c = String(cell || '').toLowerCase().trim();
+        if (c.includes('fecha') || c.includes('date')) dateCol = idx;
+        else if (c.includes('mes') || c === 'month') monthCol = idx;
+        else if (c.includes('tipo') || c === 'type') typeCol = idx;
+        else if (c.includes('concepto') || c.includes('descrip') || c.includes('nombre') || c.includes('detalle')) conceptCol = idx;
+        else if (c.includes('categor') || c.includes('regla') || c.includes('necesidad')) needCol = idx;
+        else if (c.includes('monto') || c.includes('amount') || c.includes('importe') || c.includes('precio') || c.includes('costo')) amountCol = idx;
+        else if (c.includes('nota') || c.includes('coment')) notesCol = idx;
+        else if (c.includes('id') || c.includes('registro')) idCol = idx;
+      });
+      break;
+    }
+  }
+
+  const startIdx = headerIndex >= 0 ? headerIndex + 1 : 1;
+  const parsedMovements: Movimiento[] = [];
+
+  for (let i = startIdx; i < rows.length; i++) {
+    const row = rows[i];
+    if (!Array.isArray(row) || row.length === 0) continue;
+
+    const rawConcepto = row[conceptCol] !== undefined ? row[conceptCol] : (row[typeCol] || '');
+    const rawMonto = row[amountCol] !== undefined ? row[amountCol] : (row[needCol] !== undefined ? row[needCol] : undefined);
+    if (!rawConcepto && (rawMonto === undefined || rawMonto === '' || rawMonto === null)) continue;
+
+    // Date normalization
+    let rawFecha = row[dateCol];
+    let fecha = '';
+    if (rawFecha instanceof Date) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      fecha = `${rawFecha.getFullYear()}-${pad(rawFecha.getMonth() + 1)}-${pad(rawFecha.getDate())}`;
+    } else if (typeof rawFecha === 'number') {
+      const dateObj = new Date(Math.round((rawFecha - 25569) * 86400 * 1000));
+      if (!isNaN(dateObj.getTime())) {
+        const pad = (n: number) => String(n).padStart(2, '0');
+        fecha = `${dateObj.getFullYear()}-${pad(dateObj.getMonth() + 1)}-${pad(dateObj.getDate())}`;
+      }
+    } else {
+      fecha = String(rawFecha || '').trim();
+    }
+
+    const mes = String(row[monthCol] || '').trim();
+    const rawTipo = String(row[typeCol] || '').trim();
+    const concepto = String(rawConcepto || 'Movimiento').trim();
+    const rawNecesidad = String(row[needCol] || '').trim();
+
+    let monto = 0;
+    if (typeof rawMonto === 'number') {
+      monto = rawMonto;
+    } else {
+      const cleanStr = String(rawMonto || '0').replace(/[^0-9.-]+/g, '');
+      monto = parseFloat(cleanStr) || 0;
+    }
+
+    if (monto === 0 && (!concepto || concepto.toLowerCase() === 'total' || concepto.toLowerCase().includes('resumen'))) {
+      continue;
+    }
+
+    let tipo: Movimiento['tipo'] = 'GastoVariable';
+    const tipoLower = rawTipo.toLowerCase();
+    if (tipoLower.includes('ingreso') || tipoLower.includes('income')) tipo = 'Ingreso';
+    else if (tipoLower.includes('factura') || tipoLower.includes('fijo') || tipoLower.includes('bill')) tipo = 'Factura';
+    else if (tipoLower.includes('ahorro') || tipoLower.includes('saving')) tipo = 'Ahorro';
+    else if (tipoLower.includes('invers') || tipoLower.includes('invest')) tipo = 'Inversion';
+    else if (tipoLower.includes('deud') || tipoLower.includes('debt')) tipo = 'Deuda';
+    else if (tipoLower.includes('variable')) tipo = 'GastoVariable';
+
+    let necesidad: Movimiento['necesidad'] = '';
+    const necLower = rawNecesidad.toLowerCase();
+    if (necLower.includes('necesidad') || necLower.includes('50')) necesidad = 'Necesidades';
+    else if (necLower.includes('deseo') || necLower.includes('30')) necesidad = 'Deseos';
+    else if (necLower.includes('ahorro') || necLower.includes('inver') || necLower.includes('20')) necesidad = 'Ahorros';
+    else if (tipo === 'Factura') necesidad = 'Necesidades';
+    else if (tipo === 'GastoVariable') necesidad = 'Deseos';
+    else if (tipo === 'Ahorro' || tipo === 'Inversion') necesidad = 'Ahorros';
+
+    const notas = row[notesCol] ? String(row[notesCol]) : '';
+    const id = row[idCol] ? String(row[idCol]) : `excel-row-${i}-${Date.now()}`;
+
+    parsedMovements.push({
+      id,
+      fecha: fecha || new Date().toISOString().slice(0, 10),
+      mes: normalizeMonth(mes, fecha),
+      tipo,
+      concepto,
+      necesidad,
+      monto,
+      notas,
+    });
+  }
+
+  return parsedMovements;
+}
+
+/**
+ * Parses all sheets of an XLSX workbook into Movimiento items.
+ */
+export function parseWorkbookToMovements(workbook: XLSX.WorkBook): Movimiento[] {
+  const sheetNames = workbook.SheetNames;
+  if (!sheetNames || sheetNames.length === 0) return [];
+
+  // 1. Look for a dedicated 'Movimientos' or 'Gastos' or 'Transacciones' sheet
+  const movSheetName = sheetNames.find((n) => {
+    const l = n.toLowerCase().trim();
+    return l === 'movimientos' || l === 'transacciones' || l === 'gastos' || l === 'datos';
+  });
+
+  if (movSheetName && workbook.Sheets[movSheetName]) {
+    const rows = XLSX.utils.sheet_to_json<any[]>(workbook.Sheets[movSheetName], { header: 1, defval: '' });
+    const movs = parseRawRowsToMovements(rows);
+    if (movs.length > 0) return movs;
+  }
+
+  // 2. Check for month sheets (ENE, FEB, MAR, ...)
+  const monthAbbrs = ['ene', 'feb', 'mar', 'abr', 'may', 'jun', 'jul', 'ago', 'sep', 'oct', 'nov', 'dic'];
+  const monthSheets = sheetNames.filter((n) => monthAbbrs.includes(n.toLowerCase().trim().slice(0, 3)));
+
+  if (monthSheets.length > 0) {
+    const allMonthMovs: Movimiento[] = [];
+    for (const sName of monthSheets) {
+      const sheet = workbook.Sheets[sName];
+      if (!sheet) continue;
+      const rows = XLSX.utils.sheet_to_json<any[]>(sheet, { header: 1, defval: '' });
+      const movs = parseRawRowsToMovements(rows);
+      allMonthMovs.push(...movs);
+    }
+    if (allMonthMovs.length > 0) return allMonthMovs;
+  }
+
+  // 3. Fallback to first sheet
+  const firstSheet = workbook.Sheets[sheetNames[0]];
+  if (firstSheet) {
+    const rows = XLSX.utils.sheet_to_json<any[]>(firstSheet, { header: 1, defval: '' });
+    return parseRawRowsToMovements(rows);
+  }
+
+  return [];
+}
+
+/**
+ * Reads an Excel (.xlsx / .xls) binary file directly from Google Drive using Drive API alt=media.
+ */
+export async function readExcelBinaryFromDrive(token: string, fileId: string): Promise<Movimiento[]> {
+  const res = await fetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Error al descargar Excel de Drive (HTTP ${res.status})`);
+  }
+
+  const arrayBuffer = await res.arrayBuffer();
+  const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
+  return parseWorkbookToMovements(workbook);
+}
+
+/**
+ * Writes/replaces an Excel (.xlsx) file directly in Google Drive using Drive API media upload.
+ */
+export async function writeExcelBinaryToDrive(
+  token: string,
+  fileId: string,
+  movements: Movimiento[]
+): Promise<{ ok: boolean; count: number }> {
+  const wb = XLSX.utils.book_new();
+
+  const headers = ['Fecha', 'Mes', 'Tipo', 'Concepto', 'Categoría / Regla', 'Monto', 'Notas', 'ID_Registro'];
+  const rows = movements.map((m) => [
+    m.fecha,
+    m.mes,
+    m.tipo,
+    m.concepto,
+    m.necesidad || '',
+    m.monto,
+    m.notas || '',
+    m.id,
+  ]);
+
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Movimientos');
+
+  const arrayBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
+
+  const updateRes = await fetch(
+    `https://www.googleapis.com/upload/drive/v3/files/${fileId}?uploadType=media`,
+    {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+      body: new Uint8Array(arrayBuffer),
+    }
+  );
+
+  if (!updateRes.ok) {
+    const err = await updateRes.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Error al actualizar Excel en Drive (HTTP ${updateRes.status})`);
+  }
+
+  return { ok: true, count: movements.length };
+}
+
+/**
+ * Converts a raw Excel file in Google Drive into a native, interactive Google Spreadsheet.
+ */
+export async function convertDriveExcelToGoogleSpreadsheet(
+  token: string,
+  excelFileId: string,
+  originalName: string
+): Promise<{ id: string; title: string; webViewLink: string }> {
+  // Download binary from Drive
+  const dlRes = await fetch(
+    `https://www.googleapis.com/drive/v3/files/${excelFileId}?alt=media`,
+    {
+      headers: { Authorization: `Bearer ${token}` },
+    }
+  );
+  if (!dlRes.ok) {
+    throw new Error(`Error al leer archivo original de Drive (HTTP ${dlRes.status})`);
+  }
+  const arrayBuf = await dlRes.arrayBuffer();
+
+  const metadata = {
+    name: originalName.replace(/\.xlsx$/i, '') + ' (Google Sheets)',
+    mimeType: 'application/vnd.google-apps.spreadsheet',
+  };
+
+  const boundary = '-------314159265358979323846';
+  const delimiter = `\r\n--${boundary}\r\n`;
+  const closeDelimiter = `\r\n--${boundary}--`;
+
+  const metaPart = `${delimiter}Content-Type: application/json; charset=UTF-8\r\n\r\n${JSON.stringify(metadata)}`;
+  const mediaHeader = `${delimiter}Content-Type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet\r\nContent-Transfer-Encoding: base64\r\n\r\n`;
+
+  let binary = '';
+  const bytes = new Uint8Array(arrayBuf);
+  const len = bytes.byteLength;
+  for (let i = 0; i < len; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  const base64Data = btoa(binary);
+
+  const multipartRequestBody = metaPart + mediaHeader + base64Data + closeDelimiter;
+
+  const uploadRes = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': `multipart/related; boundary=${boundary}`,
+      },
+      body: multipartRequestBody,
+    }
+  );
+
+  if (!uploadRes.ok) {
+    const err = await uploadRes.json().catch(() => ({}));
+    throw new Error(err?.error?.message || 'Error al convertir Excel a Google Sheets');
+  }
+
+  const created = await uploadRes.json();
+  return {
+    id: created.id,
+    title: created.name || metadata.name,
+    webViewLink: `https://docs.google.com/spreadsheets/d/${created.id}/edit`,
+  };
+}
+
+/**
+ * Prepares an Excel or Google Spreadsheet in Drive for synchronization.
  */
 export async function prepareSpreadsheetForRealtimeSync(
   token: string,
@@ -126,65 +481,22 @@ export async function prepareSpreadsheetForRealtimeSync(
   id: string;
   title: string;
   webViewLink?: string;
-  convertedFromExcel: boolean;
+  isExcel: boolean;
 }> {
-  // If already native Google Spreadsheet
-  if (file.mimeType === 'application/vnd.google-apps.spreadsheet') {
+  if (isExcelFile(file)) {
     return {
       id: file.id,
       title: file.name,
-      webViewLink: file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
-      convertedFromExcel: false,
+      webViewLink: file.webViewLink || `https://drive.google.com/file/d/${file.id}/view`,
+      isExcel: true,
     };
   }
 
-  // Check if Google Sheets API can read this file directly
-  try {
-    const testUrl = `https://sheets.googleapis.com/v4/spreadsheets/${file.id}?fields=spreadsheetId,properties.title`;
-    const testRes = await fetch(testUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (testRes.ok) {
-      const testData = await testRes.json();
-      return {
-        id: file.id,
-        title: testData.properties?.title || file.name,
-        webViewLink: file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
-        convertedFromExcel: false,
-      };
-    }
-  } catch (err) {
-    // If not readable directly, proceed with conversion
-  }
-
-  // Convert/copy .xlsx file into a Google Spreadsheet in the user's Drive
-  const copyUrl = `https://www.googleapis.com/drive/v3/files/${file.id}/copy`;
-  const res = await fetch(copyUrl, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      name: file.name.replace(/\.xlsx$/i, '') + ' (Google Sheets)',
-      mimeType: 'application/vnd.google-apps.spreadsheet',
-    }),
-  });
-
-  if (!res.ok) {
-    const errData = await res.json().catch(() => ({}));
-    throw new Error(
-      errData?.error?.message ||
-        'El archivo Excel .xlsx no pudo ser transformado a Google Sheets para sincronización en vivo. Por favor ábrelo con Google Sheets en tu Drive una vez.'
-    );
-  }
-
-  const converted = await res.json();
   return {
-    id: converted.id,
-    title: converted.name || file.name,
-    webViewLink: `https://docs.google.com/spreadsheets/d/${converted.id}/edit`,
-    convertedFromExcel: true,
+    id: file.id,
+    title: file.name,
+    webViewLink: file.webViewLink || `https://docs.google.com/spreadsheets/d/${file.id}/edit`,
+    isExcel: false,
   };
 }
 
@@ -201,7 +513,7 @@ export interface SpreadsheetMetadata {
 }
 
 /**
- * Gets details of a specific spreadsheet (tabs, title).
+ * Gets details of a Google Spreadsheet (tabs, title).
  */
 export async function getSpreadsheetDetails(
   token: string,
@@ -243,16 +555,12 @@ export async function createDefaultSpreadsheet(
   title = 'Mis Finanzas 50/30/20'
 ): Promise<SpreadsheetMetadata> {
   const body = {
-    properties: {
-      title,
-    },
+    properties: { title },
     sheets: [
       {
         properties: {
           title: 'Movimientos',
-          gridProperties: {
-            frozenRowCount: 1,
-          },
+          gridProperties: { frozenRowCount: 1 },
         },
       },
       { properties: { title: 'ENE' } },
@@ -287,7 +595,6 @@ export async function createDefaultSpreadsheet(
   const created = await res.json();
   const spreadsheetId = created.spreadsheetId;
 
-  // Initialize header row in Movimientos
   const headers = [
     ['Fecha', 'Mes', 'Tipo', 'Concepto', 'Categoría / Regla', 'Monto', 'Notas', 'ID_Registro'],
   ];
@@ -316,14 +623,13 @@ export async function createDefaultSpreadsheet(
 }
 
 /**
- * Ensures that the target spreadsheet has a valid 'Movimientos' or active tab with headers.
+ * Ensures that the target spreadsheet has a valid 'Movimientos' header row.
  */
 export async function ensureMovimientosHeader(
   token: string,
   spreadsheetId: string,
   sheetName: string
 ): Promise<void> {
-  // Check if header row exists
   const checkUrl = `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
     sheetName
   )}!A1:H1`;
@@ -334,12 +640,10 @@ export async function ensureMovimientosHeader(
   if (res.ok) {
     const data = await res.json();
     if (data.values && data.values.length > 0 && data.values[0].length > 0) {
-      // Already has headers
       return;
     }
   }
 
-  // Set default headers
   const headers = [
     ['Fecha', 'Mes', 'Tipo', 'Concepto', 'Categoría / Regla', 'Monto', 'Notas', 'ID_Registro'],
   ];
@@ -400,50 +704,8 @@ export async function appendMovementToGoogleSheet(
   return { ok: true, updatedRange: data?.updates?.updatedRange };
 }
 
-const MONTH_NAMES = [
-  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
-  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'
-];
-
-function normalizeMonth(rawMes: string, rawFecha: string): string {
-  const clean = String(rawMes || '').trim().toLowerCase();
-  const map: Record<string, string> = {
-    ene: 'Enero', enero: 'Enero', '1': 'Enero', '01': 'Enero',
-    feb: 'Febrero', febrero: 'Febrero', '2': 'Febrero', '02': 'Febrero',
-    mar: 'Marzo', marzo: 'Marzo', '3': 'Marzo', '03': 'Marzo',
-    abr: 'Abril', abril: 'Abril', '4': 'Abril', '04': 'Abril',
-    may: 'Mayo', mayo: 'Mayo', '5': 'Mayo', '05': 'Mayo',
-    jun: 'Junio', junio: 'Junio', '6': 'Junio', '06': 'Junio',
-    jul: 'Julio', julio: 'Julio', '7': 'Julio', '07': 'Julio',
-    ago: 'Agosto', agosto: 'Agosto', '8': 'Agosto', '08': 'Agosto',
-    sep: 'Septiembre', set: 'Septiembre', septiembre: 'Septiembre', '9': 'Septiembre', '09': 'Septiembre',
-    oct: 'Octubre', octubre: 'Octubre', '10': 'Octubre',
-    nov: 'Noviembre', noviembre: 'Noviembre', '11': 'Noviembre',
-    dic: 'Diciembre', diciembre: 'Diciembre', '12': 'Diciembre',
-  };
-
-  if (map[clean]) return map[clean];
-
-  if (rawFecha) {
-    const isoMatch = rawFecha.match(/^\d{4}[-/](\d{1,2})[-/]\d{1,2}/);
-    if (isoMatch) {
-      const idx = parseInt(isoMatch[1], 10) - 1;
-      if (idx >= 0 && idx < 12) return MONTH_NAMES[idx];
-    }
-    const latMatch = rawFecha.match(/^\d{1,2}[-/](\d{1,2})[-/]\d{2,4}/);
-    if (latMatch) {
-      const idx = parseInt(latMatch[1], 10) - 1;
-      if (idx >= 0 && idx < 12) return MONTH_NAMES[idx];
-    }
-  }
-
-  return 'Enero';
-}
-
 /**
- * Reads movements from Google Sheets.
- * Handles both the template format (headers at row 4, data starting row 5)
- * and the standard format (headers at row 1, data starting row 2).
+ * Reads movements from Google Sheets using Sheets API v4.
  */
 export async function readMovementsFromGoogleSheet(
   token: string,
@@ -465,64 +727,7 @@ export async function readMovementsFromGoogleSheet(
 
   const data = await res.json();
   const rows: any[][] = data.values || [];
-  if (rows.length === 0) return [];
-
-  // Determine starting row:
-  // Check if row 4 is a header like in Code.gs ("Fecha", "Mes", "Tipo", "Concepto", etc.)
-  let startIndex = 1;
-  if (rows.length >= 5) {
-    const row4Text = rows[3] ? rows[3].join(' ').toLowerCase() : '';
-    if (row4Text.includes('fecha') || row4Text.includes('concepto') || row4Text.includes('monto')) {
-      startIndex = 4; // Start data at index 4 (row 5)
-    }
-  }
-
-  const parsedMovements: Movimiento[] = [];
-
-  for (let i = startIndex; i < rows.length; i++) {
-    const row = rows[i];
-    if (!row || row.length === 0) continue;
-
-    // Minimum check: concept or amount exists
-    const rawConcepto = row[3] || row[2] || '';
-    const rawMonto = row[5] !== undefined ? row[5] : (row[4] !== undefined ? row[4] : 0);
-    if (!rawConcepto && !rawMonto) continue;
-
-    const fecha = String(row[0] || '').trim();
-    const mes = String(row[1] || '').trim();
-    const tipo = (String(row[2] || 'GastoVariable').trim()) as Movimiento['tipo'];
-    const concepto = String(row[3] || 'Movimiento sin nombre').trim();
-    const necesidad = (String(row[4] || '').trim()) as Movimiento['necesidad'];
-    
-    // Clean monto: strip currency signs, commas if string
-    let monto = 0;
-    if (typeof rawMonto === 'number') {
-      monto = rawMonto;
-    } else {
-      const cleanStr = String(rawMonto).replace(/[^0-9.-]+/g, '');
-      monto = parseFloat(cleanStr) || 0;
-    }
-
-    const notas = row[6] ? String(row[6]) : '';
-    const id = row[7] ? String(row[7]) : `sheet-row-${i}-${Date.now()}`;
-
-    parsedMovements.push({
-      id,
-      fecha: fecha || new Date().toISOString().slice(0, 10),
-      mes: normalizeMonth(mes, fecha),
-      tipo: (['Ingreso', 'Factura', 'GastoVariable', 'Ahorro', 'Inversion', 'Deuda'].includes(tipo)
-        ? tipo
-        : 'GastoVariable') as Movimiento['tipo'],
-      concepto: concepto || 'Sin concepto',
-      necesidad: (['Necesidades', 'Deseos', 'Ahorros'].includes(necesidad)
-        ? necesidad
-        : '') as Movimiento['necesidad'],
-      monto,
-      notas,
-    });
-  }
-
-  return parsedMovements;
+  return parseRawRowsToMovements(rows);
 }
 
 /**
@@ -534,7 +739,6 @@ export async function syncAllMovementsToGoogleSheet(
   movements: Movimiento[],
   sheetName = 'Movimientos'
 ): Promise<{ ok: boolean; count: number }> {
-  // Clear existing data rows starting from row 2
   await fetch(
     `https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(
       sheetName
@@ -548,7 +752,6 @@ export async function syncAllMovementsToGoogleSheet(
     }
   );
 
-  // Write header
   const headers = [
     ['Fecha', 'Mes', 'Tipo', 'Concepto', 'Categoría / Regla', 'Monto', 'Notas', 'ID_Registro'],
   ];
@@ -601,4 +804,138 @@ export async function syncAllMovementsToGoogleSheet(
   }
 
   return { ok: true, count: movements.length };
+}
+
+/**
+ * Universal reader: handles both native Google Sheets and binary Excel files (.xlsx).
+ * Tries the appropriate method based on file format, with automatic fallback.
+ */
+export async function readAnySpreadsheet(
+  token: string,
+  fileId: string,
+  fileMimeOrName?: string,
+  sheetName = 'Movimientos'
+): Promise<Movimiento[]> {
+  const isExcel = isExcelFile(fileMimeOrName || '');
+
+  if (isExcel) {
+    try {
+      return await readExcelBinaryFromDrive(token, fileId);
+    } catch (excelErr) {
+      console.warn('Direct Excel read failed, trying Sheets API:', excelErr);
+      return await readMovementsFromGoogleSheet(token, fileId, sheetName);
+    }
+  }
+
+  try {
+    return await readMovementsFromGoogleSheet(token, fileId, sheetName);
+  } catch (sheetsErr) {
+    console.warn('Sheets API read failed, attempting binary Excel read:', sheetsErr);
+    return await readExcelBinaryFromDrive(token, fileId);
+  }
+}
+
+/**
+ * Universal writer: handles both native Google Sheets and binary Excel files (.xlsx).
+ */
+export async function writeAnySpreadsheet(
+  token: string,
+  fileId: string,
+  movements: Movimiento[],
+  fileMimeOrName?: string,
+  sheetName = 'Movimientos'
+): Promise<{ ok: boolean; count: number; mode: 'sheets' | 'excel' }> {
+  const isExcel = isExcelFile(fileMimeOrName || '');
+
+  if (isExcel) {
+    try {
+      const res = await writeExcelBinaryToDrive(token, fileId, movements);
+      return { ok: res.ok, count: res.count, mode: 'excel' };
+    } catch (excelErr) {
+      console.warn('Direct Excel write failed, attempting Sheets API write:', excelErr);
+      const res = await syncAllMovementsToGoogleSheet(token, fileId, movements, sheetName);
+      return { ok: res.ok, count: res.count, mode: 'sheets' };
+    }
+  }
+
+  try {
+    const res = await syncAllMovementsToGoogleSheet(token, fileId, movements, sheetName);
+    return { ok: res.ok, count: res.count, mode: 'sheets' };
+  } catch (sheetsErr) {
+    console.warn('Sheets API write failed, attempting binary Excel write:', sheetsErr);
+    const res = await writeExcelBinaryToDrive(token, fileId, movements);
+    return { ok: res.ok, count: res.count, mode: 'excel' };
+  }
+}
+
+/**
+ * Merges two lists of movements without duplicates.
+ * Matches records by id or by (fecha + normalized concepto + monto).
+ */
+export function mergeMovements(
+  existingList: Movimiento[],
+  incomingList: Movimiento[]
+): {
+  merged: Movimiento[];
+  added: number;
+} {
+  const merged = [...existingList];
+  let added = 0;
+
+  for (const inc of incomingList) {
+    const existsById = merged.some((m) => m.id === inc.id);
+    if (existsById) continue;
+
+    const existsByContent = merged.some(
+      (m) =>
+        m.fecha === inc.fecha &&
+        m.monto === inc.monto &&
+        m.concepto.trim().toLowerCase() === inc.concepto.trim().toLowerCase()
+    );
+
+    if (!existsByContent) {
+      merged.push(inc);
+      added++;
+    }
+  }
+
+  // Sort descending by date
+  merged.sort((a, b) => (b.fecha || '').localeCompare(a.fecha || ''));
+  return { merged, added };
+}
+
+/**
+ * Generates and triggers download of an Excel (.xlsx) file on the client computer.
+ */
+export function downloadMovementsAsExcel(
+  movements: Movimiento[],
+  filename = 'Presupuesto_Mensual_50_30_20.xlsx'
+): void {
+  const wb = XLSX.utils.book_new();
+
+  const headers = ['Fecha', 'Mes', 'Tipo', 'Concepto', 'Categoría / Regla', 'Monto', 'Notas', 'ID_Registro'];
+  const rows = movements.map((m) => [
+    m.fecha,
+    m.mes,
+    m.tipo,
+    m.concepto,
+    m.necesidad || '',
+    m.monto,
+    m.notas || '',
+    m.id,
+  ]);
+
+  const ws = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Movimientos');
+
+  XLSX.writeFile(wb, filename);
+}
+
+/**
+ * Parses a locally selected/dragged Excel (.xlsx) file from user's disk.
+ */
+export async function parseLocalExcelFile(file: File): Promise<Movimiento[]> {
+  const arrayBuffer = await file.arrayBuffer();
+  const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: true });
+  return parseWorkbookToMovements(workbook);
 }

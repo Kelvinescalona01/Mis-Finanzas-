@@ -27,10 +27,11 @@ service cloud.firestore {
         && data.mes is string && data.mes.size() > 0 && data.mes.size() <= 32
         && data.tipo is string && data.tipo.size() > 0 && data.tipo.size() <= 32
         && data.concepto is string && data.concepto.size() > 0 && data.concepto.size() <= 200
-        && data.necesidad is string && data.necesidad.size() > 0 && data.necesidad.size() <= 32
+        && data.necesidad is string && data.necesidad.size() <= 32
         && data.monto is number
         && (!('notas' in data) || (data.notas is string && data.notas.size() <= 500))
-        && (!('categoriaDetalle' in data) || (data.categoriaDetalle is string && data.categoriaDetalle.size() <= 50));
+        && (!('categoriaDetalle' in data) || (data.categoriaDetalle is string && data.categoriaDetalle.size() <= 50))
+        && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
 
     function isValidMeta(data, userId) {
@@ -40,7 +41,8 @@ service cloud.firestore {
         && data.objetivo is number
         && data.acumulado is number
         && data.color is string && data.color.size() > 0 && data.color.size() <= 32
-        && (!('fechaLimite' in data) || (data.fechaLimite is string && data.fechaLimite.size() <= 32));
+        && (!('fechaLimite' in data) || (data.fechaLimite is string && data.fechaLimite.size() <= 32))
+        && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
 
     function isValidSettings(data, userId) {
@@ -53,7 +55,9 @@ service cloud.firestore {
         && (!('googleSheetName' in data) || (data.googleSheetName is string && data.googleSheetName.size() <= 100))
         && (!('googleSpreadsheetTitle' in data) || (data.googleSpreadsheetTitle is string && data.googleSpreadsheetTitle.size() <= 200))
         && (!('googleDriveWebViewLink' in data) || (data.googleDriveWebViewLink is string && data.googleDriveWebViewLink.size() <= 500))
-        && (!('lastSyncedAt' in data) || (data.lastSyncedAt is string && data.lastSyncedAt.size() <= 64));
+        && (!('fileMimeType' in data) || (data.fileMimeType is string && data.fileMimeType.size() <= 200))
+        && (!('lastSyncedAt' in data) || (data.lastSyncedAt is string && data.lastSyncedAt.size() <= 64))
+        && (!('updatedAt' in data) || (data.updatedAt is string && data.updatedAt.size() <= 64));
     }
 
     // Default deny

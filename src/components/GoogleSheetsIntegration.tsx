@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   FileSpreadsheet,
   CheckCircle2,
@@ -13,6 +13,11 @@ import {
   Sparkles,
   Search,
   Check,
+  Download,
+  Upload,
+  ArrowUpDown,
+  Database,
+  FileCode2,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import { AppSettings, Movimiento, GoogleDriveFile } from '../types';
@@ -21,6 +26,7 @@ import {
   googleSignOut,
   initAuth,
   getAccessToken,
+  hasActiveAccessToken,
 } from '../utils/firebaseAuth';
 import {
   listDriveSpreadsheets,
@@ -28,10 +34,16 @@ import {
   prepareSpreadsheetForRealtimeSync,
   getSpreadsheetDetails,
   createDefaultSpreadsheet,
-  readMovementsFromGoogleSheet,
-  syncAllMovementsToGoogleSheet,
+  readAnySpreadsheet,
+  writeAnySpreadsheet,
+  mergeMovements,
+  convertDriveExcelToGoogleSpreadsheet,
+  downloadMovementsAsExcel,
+  parseLocalExcelFile,
+  isExcelFile,
   extractSpreadsheetId,
 } from '../utils/googleSheetsService';
+import { UnauthorizedDomainModal } from './UnauthorizedDomainModal';
 
 interface GoogleSheetsIntegrationProps {
   settings: AppSettings;
@@ -56,14 +68,19 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
   const [isLoadingFiles, setIsLoadingFiles] = useState(false);
   const [isSigningIn, setIsSigningIn] = useState(false);
   const [isActionPending, setIsActionPending] = useState(false);
+  const [actionLabel, setActionLabel] = useState<string>('');
   const [customSheetInput, setCustomSheetInput] = useState('');
+  const [showUnauthorizedModal, setShowUnauthorizedModal] = useState(false);
   
   // Dedicated state for Presupuesto_Mensual_50_30_20.xlsx
   const [presupuestoFile, setPresupuestoFile] = useState<GoogleDriveFile | null>(null);
   const [isSearchingPresupuesto, setIsSearchingPresupuesto] = useState(false);
   const [hasSearchedPresupuesto, setHasSearchedPresupuesto] = useState(false);
 
-  // Confirmation modal state for mutating/overwriting data in Google Sheets
+  // File input ref for local Excel uploads
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Confirmation modal state for overwriting data in Google Sheets
   const [confirmationModal, setConfirmationModal] = useState<{
     isOpen: boolean;
     title: string;
@@ -79,20 +96,38 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
   // Link any Drive file and prepare for real-time sync
   const handleLinkDriveFile = useCallback(
     async (file: GoogleDriveFile) => {
-      const token = await getAccessToken();
+      let token = await getAccessToken();
+      if (!token) {
+        try {
+          const authRes = await googleSignIn();
+          if (authRes) token = authRes.accessToken;
+        } catch (e) {
+          // handled by googleSignIn
+        }
+      }
+
       if (!token) {
         onShowToast('Inicia sesión con Google para vincular el archivo', 'info');
         return;
       }
 
       setIsActionPending(true);
+      setActionLabel('Vinculando archivo...');
       try {
         const prepared = await prepareSpreadsheetForRealtimeSync(token, file);
-        const details = await getSpreadsheetDetails(token, prepared.id);
-        const targetTab =
-          details.sheets.find((s) => s.title.toLowerCase() === 'movimientos')?.title ||
-          details.sheets[0]?.title ||
-          'Movimientos';
+        let targetTab = 'Movimientos';
+
+        if (!prepared.isExcel) {
+          try {
+            const details = await getSpreadsheetDetails(token, prepared.id);
+            targetTab =
+              details.sheets.find((s) => s.title.toLowerCase() === 'movimientos')?.title ||
+              details.sheets[0]?.title ||
+              'Movimientos';
+          } catch (e) {
+            console.warn('Could not read sheets list, defaulting to Movimientos:', e);
+          }
+        }
 
         onUpdateSettings({
           ...settings,
@@ -100,26 +135,33 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
           googleSpreadsheetTitle: file.name,
           googleSheetName: targetTab,
           googleDriveWebViewLink: prepared.webViewLink,
+          fileMimeType: file.mimeType,
           autoSync: true,
         });
 
-        // Auto-import existing movements from the sheet
+        // Auto-import existing movements from the file
         try {
-          const existing = await readMovementsFromGoogleSheet(token, prepared.id, targetTab);
-          onImportMovements(existing);
+          setActionLabel('Leyendo datos iniciales...');
+          const existing = await readAnySpreadsheet(token, prepared.id, file.mimeType || file.name, targetTab);
+          if (existing.length > 0) {
+            onImportMovements(existing);
+            onShowToast(
+              `¡Enlazado con "${file.name}"! Se cargaron ${existing.length} movimientos a la app y la base de datos.`,
+              'success'
+            );
+          } else {
+            onShowToast(`¡Enlazado con "${file.name}" en tiempo real!`, 'success');
+          }
         } catch (e) {
           console.warn('Could not auto-import movements:', e);
+          onShowToast(`¡Enlazado con "${file.name}"!`, 'success');
         }
-
-        onShowToast(
-          `¡Enlazado con "${file.name}" en tiempo real!`,
-          'success'
-        );
       } catch (err: any) {
         console.error('Error linking file:', err);
         onShowToast(`Error al enlazar: ${err.message}`, 'error');
       } finally {
         setIsActionPending(false);
+        setActionLabel('');
       }
     },
     [settings, onUpdateSettings, onImportMovements, onShowToast]
@@ -153,24 +195,28 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
         if (targetFile) {
           if (autoLinkIfFound && !settings.googleSheetId) {
             await handleLinkDriveFile(targetFile);
+          } else {
+            onShowToast(`Se encontró "${targetFile.name}" en tu Google Drive`, 'success');
           }
+        } else {
+          onShowToast('No se encontró Presupuesto_Mensual_50_30_20 en Drive. Puedes crearlo o subirlo.', 'info');
         }
       } catch (err: any) {
         console.warn('Error searching Presupuesto_Mensual_50_30_20:', err);
+        onShowToast(`Error al buscar en Drive: ${err.message}`, 'error');
       } finally {
         setIsSearchingPresupuesto(false);
       }
     },
-    [settings.googleSheetId, handleLinkDriveFile]
+    [settings.googleSheetId, handleLinkDriveFile, onShowToast]
   );
 
   // Check auth state on load
   useEffect(() => {
     const unsubscribe = initAuth(
-      (currentUser) => {
+      (currentUser, token) => {
         onUserChange(currentUser);
-        // Auto-search for Presupuesto file once user is detected
-        if (currentUser && !settings.googleSheetId) {
+        if (currentUser && !settings.googleSheetId && token) {
           handleSearchPresupuesto(false);
         }
       },
@@ -183,9 +229,18 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
 
   // Load files from Google Drive when authenticated
   const handleFetchDriveFiles = async () => {
-    const token = await getAccessToken();
+    let token = await getAccessToken();
     if (!token) {
-      onShowToast('Inicia sesión con Google para buscar tus hojas de cálculo en Drive', 'info');
+      try {
+        const res = await googleSignIn();
+        if (res) token = res.accessToken;
+      } catch (e) {
+        // error handled in signIn
+      }
+    }
+
+    if (!token) {
+      onShowToast('Inicia sesión con Google para ver tus archivos en Drive', 'info');
       return;
     }
 
@@ -194,36 +249,42 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
       const files = await listDriveSpreadsheets(token);
       setDriveFiles(files);
       if (files.length === 0) {
-        onShowToast('No se encontraron hojas de cálculo en Drive. Puedes crear una nueva.', 'info');
+        onShowToast('No se encontraron hojas ni archivos Excel en Drive. Puedes crear uno nuevo.', 'info');
+      } else {
+        onShowToast(`Se encontraron ${files.length} hojas/archivos en Drive`, 'success');
       }
     } catch (err: any) {
       console.error('Error fetching drive spreadsheets:', err);
-      onShowToast(`Error al explorar Drive: ${err.message}`, 'error');
+      onShowToast(`Error al buscar en Drive: ${err.message}`, 'error');
     } finally {
       setIsLoadingFiles(false);
     }
   };
 
+  // Google Sign-In with popup
   const handleSignIn = async () => {
     setIsSigningIn(true);
     try {
-      const res = await googleSignIn();
-      if (!res) {
-        // The user closed the popup window or canceled selection without completing auth
-        return;
+      const result = await googleSignIn();
+      if (result) {
+        onUserChange(result.user);
+        onShowToast(`Sesión iniciada como ${result.user.displayName || result.user.email}`, 'success');
+        // Auto-search for Presupuesto file after successful login
+        handleSearchPresupuesto(true);
       }
-      onUserChange(res.user);
-      onShowToast(`Sesión iniciada como ${res.user.displayName || res.user.email}`, 'success');
-      // Search and link Presupuesto_Mensual_50_30_20 right away
-      await handleSearchPresupuesto(true);
     } catch (err: any) {
-      console.warn('Sign-in notice:', err?.message || err);
-      onShowToast(`No se pudo iniciar sesión: ${err.message || 'Error de conexión'}`, 'error');
+      console.error('Sign-in error:', err);
+      if (err?.code === 'auth/unauthorized-domain' || err?.isUnauthorizedDomain) {
+        setShowUnauthorizedModal(true);
+      } else {
+        onShowToast(`Error de autenticación: ${err.message || 'No se pudo iniciar sesión'}`, 'error');
+      }
     } finally {
       setIsSigningIn(false);
     }
   };
 
+  // Google Sign-Out
   const handleSignOut = async () => {
     try {
       await googleSignOut();
@@ -237,21 +298,14 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
     }
   };
 
-  // Select an existing spreadsheet
-  const handleSelectSpreadsheet = async (sheetId: string, sheetTitle?: string) => {
+  // Select an existing spreadsheet by ID or URL
+  const handleSelectSpreadsheet = async (sheetId: string) => {
     const cleanId = extractSpreadsheetId(sheetId);
     if (!cleanId) {
-      onShowToast('ID o URL de hoja de cálculo inválida', 'error');
+      onShowToast('ID o enlace inválido', 'error');
       return;
     }
 
-    const token = await getAccessToken();
-    if (!token) {
-      onShowToast('Inicia sesión con Google para vincular la hoja', 'info');
-      return;
-    }
-
-    // If matches a known driveFile, use handleLinkDriveFile
     const existingFile = driveFiles.find((f) => f.id === cleanId);
     if (existingFile) {
       await handleLinkDriveFile(existingFile);
@@ -259,62 +313,98 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
       return;
     }
 
+    let token = await getAccessToken();
+    if (!token) {
+      try {
+        const authRes = await googleSignIn();
+        if (authRes) token = authRes.accessToken;
+      } catch (e) {}
+    }
+
+    if (!token) {
+      onShowToast('Inicia sesión con Google para vincular la hoja', 'info');
+      return;
+    }
+
     setIsActionPending(true);
+    setActionLabel('Conectando con la hoja...');
     try {
-      const details = await getSpreadsheetDetails(token, cleanId);
-      const targetTab = details.sheets.find((s) => s.title === 'Movimientos')?.title || details.sheets[0]?.title || 'Movimientos';
+      let title = 'Hoja de Cálculo';
+      let targetTab = 'Movimientos';
+      let mimeType = 'application/vnd.google-apps.spreadsheet';
+      let webViewLink = `https://docs.google.com/spreadsheets/d/${cleanId}/edit`;
+
+      try {
+        const details = await getSpreadsheetDetails(token, cleanId);
+        title = details.title;
+        targetTab = details.sheets.find((s) => s.title.toLowerCase() === 'movimientos')?.title || details.sheets[0]?.title || 'Movimientos';
+        webViewLink = details.webViewLink || webViewLink;
+      } catch (e) {
+        // May be an Excel file in Drive
+        mimeType = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        webViewLink = `https://drive.google.com/file/d/${cleanId}/view`;
+      }
 
       onUpdateSettings({
         ...settings,
         googleSheetId: cleanId,
-        googleSpreadsheetTitle: details.title || sheetTitle || 'Hoja de Cálculo',
+        googleSpreadsheetTitle: title,
         googleSheetName: targetTab,
-        googleDriveWebViewLink: details.webViewLink,
+        googleDriveWebViewLink: webViewLink,
+        fileMimeType: mimeType,
         autoSync: true,
       });
 
-      // Auto-import existing movements from the sheet
-      try {
-        const existing = await readMovementsFromGoogleSheet(token, cleanId, targetTab);
-        onImportMovements(existing);
-      } catch (e) {
-        console.warn('Could not auto-import movements:', e);
+      // Auto-import
+      const pulled = await readAnySpreadsheet(token, cleanId, mimeType, targetTab);
+      if (pulled.length > 0) {
+        onImportMovements(pulled);
+        onShowToast(`Vinculado a "${title}". Se importaron ${pulled.length} movimientos.`, 'success');
+      } else {
+        onShowToast(`Vinculado a "${title}" en Google Drive`, 'success');
       }
-
-      onShowToast(`Vinculado a "${details.title}" en Google Drive`, 'success');
       setCustomSheetInput('');
     } catch (err: any) {
       console.error('Error selecting sheet:', err);
       onShowToast(`Error al conectar con la hoja: ${err.message}`, 'error');
     } finally {
       setIsActionPending(false);
+      setActionLabel('');
     }
   };
 
   // Create a brand new Google Spreadsheet in Google Drive
   const handleCreateNewSheet = async () => {
-    const token = await getAccessToken();
+    let token = await getAccessToken();
+    if (!token) {
+      try {
+        const authRes = await googleSignIn();
+        if (authRes) token = authRes.accessToken;
+      } catch (e) {}
+    }
+
     if (!token) {
       onShowToast('Inicia sesión con Google para crear la hoja en Drive', 'info');
       return;
     }
 
     setIsActionPending(true);
+    setActionLabel('Creando hoja en Drive...');
     try {
-      const created = await createDefaultSpreadsheet(token, 'Mis Finanzas 50/30/20');
+      const created = await createDefaultSpreadsheet(token, 'Presupuesto_Mensual_50_30_20');
       onUpdateSettings({
         ...settings,
         googleSheetId: created.id,
         googleSpreadsheetTitle: created.title,
         googleSheetName: 'Movimientos',
         googleDriveWebViewLink: created.webViewLink,
+        fileMimeType: 'application/vnd.google-apps.spreadsheet',
         autoSync: true,
       });
 
-      onShowToast('¡Hoja "Mis Finanzas 50/30/20" creada con éxito en Google Drive!', 'success');
-      // Sync initial sample/current movements to the newly created sheet
+      onShowToast('¡Hoja "Presupuesto_Mensual_50_30_20" creada con éxito en Google Drive!', 'success');
       if (movimientos.length > 0) {
-        await syncAllMovementsToGoogleSheet(token, created.id, movimientos, 'Movimientos');
+        await writeAnySpreadsheet(token, created.id, movimientos, 'application/vnd.google-apps.spreadsheet', 'Movimientos');
       }
       handleFetchDriveFiles();
     } catch (err: any) {
@@ -322,101 +412,255 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
       onShowToast(`Error al crear la hoja: ${err.message}`, 'error');
     } finally {
       setIsActionPending(false);
+      setActionLabel('');
     }
   };
 
-  // Pull / Import movements from Google Sheets
+  // 1. PULL / IMPORT: Read from Drive (Excel or Google Sheets), save to app & Firestore
   const handlePullFromSheet = async () => {
     if (!settings.googleSheetId) {
-      onShowToast('Primero selecciona o vincula una hoja de Google Sheets', 'info');
+      onShowToast('Primero vincula un archivo o hoja de Google Drive', 'info');
       return;
     }
 
-    const token = await getAccessToken();
+    let token = await getAccessToken();
+    if (!token) {
+      try {
+        const authRes = await googleSignIn();
+        if (authRes) token = authRes.accessToken;
+      } catch (e) {}
+    }
+
     if (!token) {
       onShowToast('Por favor vuelve a iniciar sesión con Google para sincronizar', 'info');
       return;
     }
 
     setIsActionPending(true);
+    setActionLabel('Leyendo datos desde Drive...');
     try {
-      const pulled = await readMovementsFromGoogleSheet(
+      const pulled = await readAnySpreadsheet(
         token,
         settings.googleSheetId,
+        settings.fileMimeType || settings.googleSpreadsheetTitle,
         settings.googleSheetName || 'Movimientos'
       );
 
       if (pulled.length === 0) {
-        onShowToast('La hoja de Google Sheets no tiene movimientos registrados todavía.', 'info');
+        onShowToast('El archivo en Google Drive no tiene movimientos registrados todavía.', 'info');
       } else {
         onImportMovements(pulled);
+        const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         onUpdateSettings({
           ...settings,
-          lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+          lastSyncedAt: timeStr,
         });
-        onShowToast(`Se importaron ${pulled.length} movimientos desde Google Sheets`, 'success');
+        onShowToast(`¡Éxito! Se importaron ${pulled.length} movimientos desde Drive a la app y la base de datos`, 'success');
       }
     } catch (err: any) {
       console.error('Error pulling from Google Sheets:', err);
-      onShowToast(`Error al leer de Google Sheets: ${err.message}`, 'error');
+      onShowToast(`Error al leer desde Drive: ${err.message}`, 'error');
     } finally {
       setIsActionPending(false);
+      setActionLabel('');
     }
   };
 
-  // Push / Export all local movements to Google Sheets with required confirmation
+  // 2. PUSH / EXPORT: Write local and database movements to Drive (Excel or Google Sheets)
   const handlePushAllToSheet = () => {
     if (!settings.googleSheetId) {
-      onShowToast('Primero vincula una hoja de cálculo', 'info');
+      onShowToast('Primero vincula una hoja de cálculo o archivo Excel', 'info');
       return;
     }
 
     setConfirmationModal({
       isOpen: true,
-      title: '¿Sincronizar y actualizar hoja en Google Drive?',
-      description: `Se enviarán ${movimientos.length} movimientos a la hoja "${settings.googleSpreadsheetTitle || 'Google Sheets'}". Los datos de la pestaña "${settings.googleSheetName || 'Movimientos'}" se actualizarán con el estado actual de la app web.`,
+      title: '¿Enviar datos a Google Drive / Excel?',
+      description: `Se enviarán los ${movimientos.length} movimientos de la app y base de datos a "${settings.googleSpreadsheetTitle || 'Google Sheets'}". La hoja se actualizará para reflejar exactamente estos datos.`,
       onConfirm: async () => {
         setConfirmationModal((prev) => ({ ...prev, isOpen: false }));
-        const token = await getAccessToken();
+        let token = await getAccessToken();
+        if (!token) {
+          try {
+            const authRes = await googleSignIn();
+            if (authRes) token = authRes.accessToken;
+          } catch (e) {}
+        }
+
         if (!token) {
           onShowToast('Inicia sesión con Google para completar la sincronización', 'info');
           return;
         }
 
         setIsActionPending(true);
+        setActionLabel('Enviando datos a Drive...');
         try {
-          const res = await syncAllMovementsToGoogleSheet(
+          const res = await writeAnySpreadsheet(
             token,
             settings.googleSheetId!,
             movimientos,
+            settings.fileMimeType || settings.googleSpreadsheetTitle,
             settings.googleSheetName || 'Movimientos'
           );
+          const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
           onUpdateSettings({
             ...settings,
-            lastSyncedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+            lastSyncedAt: timeStr,
           });
-          onShowToast(`¡${res.count} movimientos sincronizados en tiempo real con Google Sheets!`, 'success');
+          onShowToast(`¡${res.count} movimientos guardados con éxito en tu archivo de Google Drive (${res.mode === 'excel' ? 'Excel' : 'Google Sheets'})!`, 'success');
         } catch (err: any) {
           console.error('Error syncing all:', err);
-          onShowToast(`Error al sincronizar: ${err.message}`, 'error');
+          onShowToast(`Error al sincronizar con Drive: ${err.message}`, 'error');
         } finally {
           setIsActionPending(false);
+          setActionLabel('');
         }
       },
     });
   };
 
+  // 3. FULL BIDIRECTIONAL SYNC: Merge Drive/Excel data with Firestore/App data
+  const handleBidirectionalSync = async () => {
+    if (!settings.googleSheetId) {
+      onShowToast('Primero vincula una hoja o archivo Excel en Google Drive', 'info');
+      return;
+    }
+
+    let token = await getAccessToken();
+    if (!token) {
+      try {
+        const authRes = await googleSignIn();
+        if (authRes) token = authRes.accessToken;
+      } catch (e) {}
+    }
+
+    if (!token) {
+      onShowToast('Inicia sesión con Google para sincronizar', 'info');
+      return;
+    }
+
+    setIsActionPending(true);
+    setActionLabel('Sincronizando bidireccionalmente...');
+    try {
+      // 1. Read from Drive
+      const remoteMovs = await readAnySpreadsheet(
+        token,
+        settings.googleSheetId,
+        settings.fileMimeType || settings.googleSpreadsheetTitle,
+        settings.googleSheetName || 'Movimientos'
+      );
+
+      // 2. Merge without duplicates
+      const { merged, added } = mergeMovements(movimientos, remoteMovs);
+
+      // 3. Write unified set to Drive
+      await writeAnySpreadsheet(
+        token,
+        settings.googleSheetId,
+        merged,
+        settings.fileMimeType || settings.googleSpreadsheetTitle,
+        settings.googleSheetName || 'Movimientos'
+      );
+
+      // 4. Update local app and Firestore database
+      onImportMovements(merged);
+      const timeStr = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      onUpdateSettings({
+        ...settings,
+        lastSyncedAt: timeStr,
+      });
+
+      onShowToast(
+        `¡Sincronización total bidireccional lista! ${merged.length} movimientos unificados (${added} nuevos incorporados)`,
+        'success'
+      );
+    } catch (err: any) {
+      console.error('Error in bidirectional sync:', err);
+      onShowToast(`Error en sincronización bidireccional: ${err.message}`, 'error');
+    } finally {
+      setIsActionPending(false);
+      setActionLabel('');
+    }
+  };
+
+  // Convert an Excel file in Drive to a native Google Spreadsheet
+  const handleConvertExcelToGoogleSheet = async () => {
+    if (!settings.googleSheetId) return;
+
+    let token = await getAccessToken();
+    if (!token) {
+      onShowToast('Inicia sesión con Google para convertir el archivo', 'info');
+      return;
+    }
+
+    setIsActionPending(true);
+    setActionLabel('Convirtiendo Excel a Google Sheets...');
+    try {
+      const converted = await convertDriveExcelToGoogleSpreadsheet(
+        token,
+        settings.googleSheetId,
+        settings.googleSpreadsheetTitle || 'Presupuesto_Mensual_50_30_20'
+      );
+
+      onUpdateSettings({
+        ...settings,
+        googleSheetId: converted.id,
+        googleSpreadsheetTitle: converted.title,
+        googleSheetName: 'Movimientos',
+        googleDriveWebViewLink: converted.webViewLink,
+        fileMimeType: 'application/vnd.google-apps.spreadsheet',
+      });
+
+      onShowToast(`¡Archivo convertido a Google Sheets interactivo! Puedes editarlo en vivo en Docs.`, 'success');
+      handleFetchDriveFiles();
+    } catch (err: any) {
+      console.error('Error converting excel:', err);
+      onShowToast(`Error al convertir: ${err.message}`, 'error');
+    } finally {
+      setIsActionPending(false);
+      setActionLabel('');
+    }
+  };
+
+  // Local Excel file upload
+  const handleLocalExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsActionPending(true);
+    setActionLabel('Leyendo archivo Excel local...');
+    try {
+      const parsed = await parseLocalExcelFile(file);
+      if (parsed.length === 0) {
+        onShowToast('No se detectaron movimientos válidos en el archivo Excel seleccionado', 'info');
+      } else {
+        const { merged, added } = mergeMovements(movimientos, parsed);
+        onImportMovements(merged);
+        onShowToast(`¡Cargados ${parsed.length} movimientos desde ${file.name} (${added} nuevos añadidos a la base de datos)!`, 'success');
+      }
+    } catch (err: any) {
+      console.error('Error reading local excel:', err);
+      onShowToast(`Error al leer archivo Excel: ${err.message}`, 'error');
+    } finally {
+      setIsActionPending(false);
+      setActionLabel('');
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const isCurrentFileExcel = isExcelFile(settings.fileMimeType || settings.googleSpreadsheetTitle || '');
+
   return (
-    <div className="bg-white border border-[#DCE3DC] rounded-2xl p-5 md:p-6 shadow-xs space-y-5">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-[#DCE3DC]">
+    <div className="bg-white border border-[#DCE3DC] rounded-2xl p-5 md:p-6 shadow-xs space-y-6">
+      {/* Header with Google Connection Status */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-[#DCE3DC]">
         <div>
           <h2 className="font-display text-base md:text-lg font-bold text-[#16241E] flex items-center gap-2">
             <FileSpreadsheet className="w-5 h-5 text-[#3E7C6B]" />
-            <span>Google Drive y Google Sheets en Tiempo Real</span>
+            <span>Sincronización Bidireccional: Drive, Excel y Base de Datos</span>
           </h2>
           <p className="text-xs text-[#6B776F] mt-1">
-            Conecta tu cuenta de Google para recopilar y reflejar tus ingresos y gastos en tiempo real en tu hoja de cálculo.
+            Conecta tu Google Drive para enviar datos a tu Excel/Google Sheet y traerlos de vuelta a la app y la base de datos Firestore.
           </p>
         </div>
 
@@ -487,7 +731,7 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
                   </svg>
                 </div>
                 <span className="gsi-material-button-contents">
-                  {isSigningIn ? 'Iniciando sesión...' : 'Conectar con Google'}
+                  {isSigningIn ? 'Conectando...' : 'Conectar con Google Drive'}
                 </span>
               </div>
             </button>
@@ -495,21 +739,21 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
         </div>
       </div>
 
-      {/* Target Excel File Locator Card: Presupuesto_Mensual_50_30_20.xlsx */}
+      {/* Target Excel File Locator: Presupuesto_Mensual_50_30_20.xlsx */}
       <div className="border border-[#3E7C6B]/40 bg-[#F4F7F4] rounded-2xl p-4 md:p-5 space-y-3.5 shadow-2xs">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
           <div className="space-y-1">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded-md bg-[#3E7C6B]/15 text-[#233830]">
                 <Sparkles className="w-3.5 h-3.5 text-[#C9A227]" />
-                <span>Archivo Objetivo de Drive</span>
+                <span>Archivo Solicitado</span>
               </span>
               <span className="text-xs font-mono font-bold text-[#16241E] bg-white px-2 py-0.5 rounded border border-[#DCE3DC]">
                 Presupuesto_Mensual_50_30_20.xlsx
               </span>
             </div>
             <p className="text-xs text-[#4D5751] leading-relaxed">
-              Ubica y enlaza este archivo Excel en tu cuenta de Google Drive para que la app web registre tus movimientos en tiempo real en él.
+              Enlaza este archivo de Excel en Google Drive para enviar tus movimientos hacia el Excel y recibirlos de vuelta en la app y base de datos.
             </p>
           </div>
 
@@ -541,15 +785,15 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
         {/* State feedback for Presupuesto_Mensual_50_30_20 */}
         {settings.googleSpreadsheetTitle?.toLowerCase().includes('presupuesto_mensual_50_30_20') ||
         (settings.googleSheetId && settings.googleSheetId === presupuestoFile?.id) ? (
-          <div className="bg-white/90 border border-emerald-300 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+          <div className="bg-white/95 border border-emerald-300 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
             <div className="flex items-center gap-2 text-emerald-950 font-medium">
               <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
               <span>
-                <strong>¡Conectado y sincronizando en vivo!</strong> Cada movimiento que guardes se registrará al instante en tu archivo{' '}
+                <strong>¡Archivo enlazado y listo para sincronizar!</strong> Vinculado a{' '}
                 <code className="bg-emerald-50 px-1 py-0.5 rounded text-emerald-800 font-bold font-mono">
                   {settings.googleSpreadsheetTitle}
                 </code>{' '}
-                (pestaña <span className="font-semibold">"{settings.googleSheetName || 'Movimientos'}"</span>).
+                ({isCurrentFileExcel ? 'Formato Excel .xlsx' : 'Google Sheets'}).
               </span>
             </div>
             {settings.googleDriveWebViewLink && (
@@ -570,7 +814,7 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
               <FileSpreadsheet className="w-4 h-4 text-emerald-600 shrink-0" />
               <div>
                 <p className="font-bold text-[#16241E] flex items-center gap-1.5">
-                  <span>Encontrado en tu Google Drive:</span>
+                  <span>Encontrado en Google Drive:</span>
                   <span className="font-mono text-emerald-800">{presupuestoFile.name}</span>
                 </p>
                 <p className="text-[11px] text-[#6B776F]">
@@ -585,7 +829,7 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
               className="text-xs font-bold text-white bg-[#16241E] hover:bg-[#233830] px-3.5 py-1.5 rounded-lg transition-colors shrink-0 flex items-center gap-1"
             >
               <Check className="w-3.5 h-3.5 text-[#C9A227]" />
-              <span>Enlazar este archivo y activar en tiempo real</span>
+              <span>Enlazar este archivo</span>
             </button>
           </div>
         ) : hasSearchedPresupuesto ? (
@@ -593,101 +837,135 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
             <AlertCircle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
             <div className="space-y-1">
               <p className="font-semibold">
-                No encontramos aún el archivo llamado exactamente "Presupuesto_Mensual_50_30_20.xlsx" en la búsqueda rápida de tu Drive.
+                No encontramos el archivo "Presupuesto_Mensual_50_30_20.xlsx" en la búsqueda rápida.
               </p>
               <p className="text-[11px] text-amber-800/90 leading-relaxed">
-                Si ya lo tienes en tu computadora o en una carpeta de Drive, puedes subirlo en <a href="https://drive.google.com" target="_blank" rel="noopener noreferrer" className="underline font-bold">drive.google.com</a> y pulsar <b>"Buscar en mi Drive"</b>, o copiar su enlace/URL y pegarlo en la casilla de abajo.
+                Puedes crearlo en 1 clic abajo pulsando <b>"Crear hoja en Google Drive"</b>, o si ya lo tienes en tu computadora, puedes subirlo a <a href="https://drive.google.com" target="_blank" rel="noopener noreferrer" className="underline font-bold">drive.google.com</a> o importarlo directamente usando las herramientas locales más abajo.
               </p>
             </div>
           </div>
         ) : !user ? (
-          <div className="bg-white/70 border border-[#DCE3DC] rounded-xl p-3 text-xs text-[#6B776F] flex items-center justify-between">
-            <span>Inicia sesión con tu cuenta de Google arriba para navegar en tu Drive y ubicar tu archivo.</span>
+          <div className="bg-white/70 border border-[#DCE3DC] rounded-xl p-3 text-xs text-[#6B776F]">
+            Inicia sesión con tu cuenta de Google arriba para conectar con Drive y localizar tu archivo.
           </div>
         ) : null}
       </div>
 
-      {/* Active Linked Spreadsheet Banner */}
-      {settings.googleSheetId ? (
-        <div className="bg-emerald-50/60 border border-emerald-200/80 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <CloudCheck className="w-4 h-4 text-emerald-700 shrink-0" />
-              <span className="text-xs font-bold text-emerald-900">
-                Vinculado a: {settings.googleSpreadsheetTitle || 'Hoja de Cálculo'}
-              </span>
-              <span className="text-[10px] bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded-full">
-                Pestaña: {settings.googleSheetName || 'Movimientos'}
-              </span>
+      {/* Main Bidirectional Sync Operations Card */}
+      {settings.googleSheetId && (
+        <div className="border border-emerald-300 bg-emerald-50/40 rounded-2xl p-4 md:p-5 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h3 className="text-xs md:text-sm font-bold text-emerald-950 flex items-center gap-2">
+                <ArrowUpDown className="w-4 h-4 text-[#3E7C6B]" />
+                <span>Centro de Sincronización Bidireccional</span>
+              </h3>
+              <p className="text-xs text-emerald-800/80 mt-0.5">
+                Manda datos al archivo de Drive / Excel y devuélvelos a la app y la base de datos Firestore en cualquier momento.
+              </p>
             </div>
-            <p className="text-[11px] text-emerald-800/80">
-              {settings.autoSync
-                ? '⚡ Sincronización en tiempo real activa. Cada movimiento que agregues se registrará de inmediato.'
-                : 'Sincronización manual activa.'}
-              {settings.lastSyncedAt && ` (Última sincronización: ${settings.lastSyncedAt})`}
-            </p>
+
+            {settings.lastSyncedAt && (
+              <span className="text-[11px] bg-white text-emerald-900 font-semibold px-2.5 py-1 rounded-full border border-emerald-200 self-start sm:self-auto">
+                Última sync: {settings.lastSyncedAt}
+              </span>
+            )}
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
-            {settings.googleDriveWebViewLink && (
-              <a
-                href={settings.googleDriveWebViewLink}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="inline-flex items-center gap-1.5 text-xs text-[#3E7C6B] hover:text-[#233830] font-semibold bg-white border border-[#DCE3DC] px-3 py-1.5 rounded-lg shadow-2xs hover:bg-[#FAFBF9] transition-colors"
-              >
-                <span>Abrir en Drive</span>
-                <ExternalLink className="w-3.5 h-3.5" />
-              </a>
-            )}
+          {/* Sync Buttons */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            {/* Action 1: Full Bidirectional Sync */}
             <button
               type="button"
-              onClick={handlePullFromSheet}
+              onClick={handleBidirectionalSync}
               disabled={isActionPending}
-              className="inline-flex items-center gap-1.5 text-xs text-[#16241E] font-semibold bg-white border border-[#DCE3DC] px-3 py-1.5 rounded-lg shadow-2xs hover:bg-[#FAFBF9] transition-colors disabled:opacity-50"
+              className="flex flex-col items-center justify-center text-center p-3.5 rounded-xl bg-[#16241E] hover:bg-[#233830] text-white shadow-xs transition-colors disabled:opacity-50 space-y-1.5"
             >
-              <RefreshCw className={`w-3.5 h-3.5 ${isActionPending ? 'animate-spin' : ''}`} />
-              <span>Importar de Drive</span>
+              <div className="flex items-center gap-1.5 font-bold text-xs">
+                <ArrowUpDown className={`w-4 h-4 text-[#C9A227] ${isActionPending ? 'animate-spin' : ''}`} />
+                <span>Sincronización Total</span>
+              </div>
+              <p className="text-[10px] text-white/70">
+                Combina Excel + Base de Datos sin perder ningún registro
+              </p>
             </button>
+
+            {/* Action 2: Push / Send to Excel & Drive */}
             <button
               type="button"
               onClick={handlePushAllToSheet}
               disabled={isActionPending}
-              className="inline-flex items-center gap-1.5 text-xs text-white font-semibold bg-[#3E7C6B] hover:bg-[#2F5F52] px-3.5 py-1.5 rounded-lg shadow-2xs transition-colors disabled:opacity-50"
+              className="flex flex-col items-center justify-center text-center p-3.5 rounded-xl bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-950 shadow-2xs transition-colors disabled:opacity-50 space-y-1.5"
             >
-              <span>Sincronizar ahora</span>
+              <div className="flex items-center gap-1.5 font-bold text-xs">
+                <Upload className="w-4 h-4 text-[#3E7C6B]" />
+                <span>Enviar datos a Excel / Drive</span>
+              </div>
+              <p className="text-[10px] text-emerald-800/70">
+                Guarda los {movimientos.length} movimientos de la app en la hoja
+              </p>
+            </button>
+
+            {/* Action 3: Pull / Return from Excel & Drive */}
+            <button
+              type="button"
+              onClick={handlePullFromSheet}
+              disabled={isActionPending}
+              className="flex flex-col items-center justify-center text-center p-3.5 rounded-xl bg-white hover:bg-emerald-50 border border-emerald-300 text-emerald-950 shadow-2xs transition-colors disabled:opacity-50 space-y-1.5"
+            >
+              <div className="flex items-center gap-1.5 font-bold text-xs">
+                <Download className="w-4 h-4 text-[#3E7C6B]" />
+                <span>Traer datos a la app y BD</span>
+              </div>
+              <p className="text-[10px] text-emerald-800/70">
+                Lee la hoja y actualiza la app y base de datos Firestore
+              </p>
             </button>
           </div>
-        </div>
-      ) : (
-        <div className="bg-[#FAFBF9] border border-dashed border-[#DCE3DC] rounded-xl p-4 text-center space-y-1">
-          <p className="text-xs font-semibold text-[#16241E]">
-            No tienes ninguna hoja de Google Sheets vinculada actualmente.
-          </p>
-          <p className="text-[11px] text-[#6B776F]">
-            Crea una nueva hoja automática o selecciona un archivo existente en tu Google Drive para comenzar la sincronización en tiempo real.
-          </p>
+
+          {/* Excel conversion banner if applicable */}
+          {isCurrentFileExcel && (
+            <div className="bg-white/80 border border-emerald-200 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+              <div className="space-y-0.5 text-emerald-900">
+                <p className="font-bold flex items-center gap-1.5">
+                  <FileCode2 className="w-4 h-4 text-[#3E7C6B]" />
+                  <span>Tu archivo está en formato nativo Excel (.xlsx)</span>
+                </p>
+                <p className="text-[11px] text-emerald-800/80">
+                  La app puede leer y escribir directamente en el archivo .xlsx. Si deseas abrirlo y editarlo online en Google Docs, puedes convertirlo a Google Sheets.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleConvertExcelToGoogleSheet}
+                disabled={isActionPending}
+                className="shrink-0 text-xs font-semibold px-3 py-1.5 bg-[#3E7C6B] hover:bg-[#2F5F52] text-white rounded-lg transition-colors shadow-2xs"
+              >
+                Convertir a Google Sheets
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Connection & Selection Controls */}
+      {/* Creation & Exploration Controls */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* Option 1: Create New Sheet in Drive */}
         <div className="border border-[#DCE3DC] rounded-xl p-4 bg-[#FAFBF9] flex flex-col justify-between space-y-3">
           <div className="space-y-1">
             <h3 className="text-xs font-bold text-[#16241E] flex items-center gap-1.5">
               <PlusCircle className="w-4 h-4 text-[#3E7C6B]" />
-              <span>Crear hoja nueva en tu Google Drive</span>
+              <span>Crear hoja automática en Google Drive</span>
             </h3>
             <p className="text-[11px] text-[#6B776F] leading-relaxed">
-              Crea automáticamente la hoja <b>"Mis Finanzas 50/30/20"</b> con el formato organizado por columnas (Fecha, Mes, Tipo, Concepto, Regla 50/30/20, Monto, Notas) y pestañas mensuales.
+              Crea en tu Google Drive el archivo <b>"Presupuesto_Mensual_50_30_20"</b> con formato de columnas (Fecha, Mes, Tipo, Concepto, Regla 50/30/20, Monto, Notas) y pestañas de meses.
             </p>
           </div>
           <button
             type="button"
             onClick={handleCreateNewSheet}
             disabled={!user || isActionPending}
-            className="w-full bg-[#16241E] hover:bg-[#233830] text-white text-xs font-semibold py-2 px-3 rounded-xl transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            className="w-full bg-[#16241E] hover:bg-[#233830] text-white text-xs font-semibold py-2 px-3 rounded-xl transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
           >
             <PlusCircle className="w-4 h-4 text-[#C9A227]" />
             <span>Crear hoja en mi Google Drive</span>
@@ -699,10 +977,10 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
           <div className="space-y-1">
             <h3 className="text-xs font-bold text-[#16241E] flex items-center gap-1.5">
               <FolderOpen className="w-4 h-4 text-[#C9A227]" />
-              <span>Seleccionar de mis archivos de Drive</span>
+              <span>Explorar archivos de Drive</span>
             </h3>
             <p className="text-[11px] text-[#6B776F] leading-relaxed">
-              Busca tus hojas de cálculo existentes o archivos Excel cargados en tu cuenta de Google Drive para enlazarlos.
+              Busca tus hojas de cálculo existentes o archivos Excel cargados en tu cuenta de Google Drive para seleccionarlos.
             </p>
           </div>
           <button
@@ -712,7 +990,7 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
             className="w-full border border-[#DCE3DC] bg-white hover:bg-[#EEF2EE] text-[#16241E] text-xs font-semibold py-2 px-3 rounded-xl transition-colors disabled:opacity-40 flex items-center justify-center gap-2"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${isLoadingFiles ? 'animate-spin' : ''}`} />
-            <span>{isLoadingFiles ? 'Explorando Drive...' : 'Explorar hojas en Drive'}</span>
+            <span>{isLoadingFiles ? 'Buscando en Drive...' : 'Ver archivos de Drive'}</span>
           </button>
         </div>
       </div>
@@ -721,13 +999,14 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
       {driveFiles.length > 0 && (
         <div className="border border-[#DCE3DC] rounded-xl p-3.5 bg-white space-y-2">
           <h4 className="text-xs font-bold text-[#16241E] flex items-center justify-between">
-            <span>Hojas encontradas en tu Google Drive ({driveFiles.length}):</span>
-            <span className="text-[10px] text-[#6B776F] font-normal">Haz clic en una para vincularla</span>
+            <span>Archivos encontrados en tu Google Drive ({driveFiles.length}):</span>
+            <span className="text-[10px] text-[#6B776F] font-normal">Haz clic en "Vincular" para conectar</span>
           </h4>
           <div className="max-h-48 overflow-y-auto divide-y divide-[#EEF2EE] border border-[#EEF2EE] rounded-lg">
             {driveFiles.map((file) => {
               const isTargetFile = file.name.toLowerCase().includes('presupuesto_mensual_50_30_20');
               const isActive = settings.googleSheetId === file.id;
+              const isExcel = isExcelFile(file);
 
               return (
                 <div
@@ -748,9 +1027,12 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
                             ⭐ Archivo Solicitado
                           </span>
                         )}
+                        <span className="text-[10px] bg-[#EEF2EE] text-[#4D5751] px-1.5 py-0.2 rounded">
+                          {isExcel ? 'Excel .xlsx' : 'Google Sheets'}
+                        </span>
                       </div>
                       <p className="text-[10px] text-[#6B776F]">
-                        {file.modifiedTime ? `Modificado: ${new Date(file.modifiedTime).toLocaleDateString()}` : file.mimeType}
+                        {file.modifiedTime ? `Modificado: ${new Date(file.modifiedTime).toLocaleDateString()}` : ''}
                       </p>
                     </div>
                   </div>
@@ -758,7 +1040,7 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
                     {isActive ? (
                       <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 font-semibold bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
                         <CheckCircle2 className="w-3 h-3" />
-                        <span>Activa</span>
+                        <span>Activo</span>
                       </span>
                     ) : (
                       <button
@@ -782,17 +1064,17 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
         </div>
       )}
 
-      {/* Option 3: Manual URL or ID input */}
+      {/* Manual Link Input */}
       <div className="pt-1">
         <label className="block text-xs font-semibold text-[#16241E] mb-1">
-          O escribe/pega el enlace directo o ID de tu hoja de Google Sheets
+          O escribe/pega el enlace o ID directo del archivo de Drive o Google Sheets
         </label>
         <div className="flex gap-2">
           <input
             type="text"
             value={customSheetInput}
             onChange={(e) => setCustomSheetInput(e.target.value)}
-            placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5n... o ID"
+            placeholder="https://docs.google.com/spreadsheets/d/1BxiMVs0XRA5n... o https://drive.google.com/file/d/..."
             className="flex-1 bg-[#FAFBF9] border border-[#DCE3DC] rounded-xl px-3 py-2 text-xs text-[#16241E] focus:outline-none focus:ring-2 focus:ring-[#3E7C6B]"
           />
           <button
@@ -806,12 +1088,51 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
         </div>
       </div>
 
+      {/* Local Excel (.xlsx) direct tools */}
+      <div className="border-t border-[#DCE3DC] pt-4">
+        <h4 className="text-xs font-bold text-[#16241E] mb-2 flex items-center gap-1.5">
+          <Database className="w-4 h-4 text-[#3E7C6B]" />
+          <span>Herramientas de Archivo Excel (.xlsx) Local</span>
+        </h4>
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={isActionPending}
+            className="flex items-center justify-center gap-2 p-3 rounded-xl border border-[#DCE3DC] bg-[#FAFBF9] hover:bg-[#EEF2EE] text-[#16241E] text-xs font-semibold transition-colors disabled:opacity-50"
+          >
+            <Upload className="w-4 h-4 text-[#3E7C6B]" />
+            <span>Cargar archivo .xlsx desde mi computadora</span>
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".xlsx,.xls,.csv"
+            onChange={handleLocalExcelUpload}
+            className="hidden"
+          />
+
+          <button
+            type="button"
+            onClick={() => {
+              downloadMovementsAsExcel(movimientos, 'Presupuesto_Mensual_50_30_20.xlsx');
+              onShowToast('Descargando archivo Presupuesto_Mensual_50_30_20.xlsx...', 'success');
+            }}
+            disabled={movimientos.length === 0}
+            className="flex items-center justify-center gap-2 p-3 rounded-xl border border-[#DCE3DC] bg-[#FAFBF9] hover:bg-[#EEF2EE] text-[#16241E] text-xs font-semibold transition-colors disabled:opacity-50"
+          >
+            <Download className="w-4 h-4 text-[#C9A227]" />
+            <span>Descargar copia en Excel (.xlsx)</span>
+          </button>
+        </div>
+      </div>
+
       {/* Auto-Sync Toggle */}
       <div className="flex items-center justify-between p-3 rounded-xl bg-[#FAFBF9] border border-[#DCE3DC]">
         <div>
           <p className="text-xs font-bold text-[#16241E]">Sincronización en tiempo real automática</p>
           <p className="text-[11px] text-[#6B776F]">
-            Al agregar o modificar un movimiento en la app web, se registrará de inmediato en la hoja de cálculo.
+            Al agregar o editar un movimiento en la app, se registrará de inmediato en tu archivo de Google Drive.
           </p>
         </div>
         <label className="relative inline-flex items-center cursor-pointer">
@@ -829,6 +1150,19 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
           <div className="w-10 h-5 bg-[#DCE3DC] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-[#DCE3DC] after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#3E7C6B]"></div>
         </label>
       </div>
+
+      {/* Loading Overlay */}
+      {isActionPending && (
+        <div className="fixed inset-0 z-50 bg-black/30 backdrop-blur-2xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl p-5 shadow-xl border border-[#DCE3DC] flex items-center gap-3 max-w-sm w-full animate-in fade-in zoom-in-95">
+            <RefreshCw className="w-5 h-5 text-[#3E7C6B] animate-spin shrink-0" />
+            <div>
+              <p className="text-xs font-bold text-[#16241E]">{actionLabel || 'Sincronizando con Google Drive...'}</p>
+              <p className="text-[11px] text-[#6B776F]">Por favor espera un momento</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Destructive Operation Confirmation Modal */}
       {confirmationModal.isOpen && (
@@ -859,12 +1193,19 @@ export const GoogleSheetsIntegration: React.FC<GoogleSheetsIntegrationProps> = (
                 onClick={confirmationModal.onConfirm}
                 className="px-4 py-2 text-xs font-semibold bg-[#3E7C6B] hover:bg-[#2F5F52] text-white rounded-xl shadow-xs transition-colors"
               >
-                Confirmar y Sincronizar
+                Confirmar y Enviar
               </button>
             </div>
           </div>
         </div>
       )}
+
+      {/* Modal de Ayuda para Dominio no Autorizado en Firebase */}
+      <UnauthorizedDomainModal
+        isOpen={showUnauthorizedModal}
+        onClose={() => setShowUnauthorizedModal(false)}
+        onRetry={handleSignIn}
+      />
     </div>
   );
 };

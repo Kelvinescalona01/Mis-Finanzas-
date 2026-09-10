@@ -3,6 +3,7 @@ import { Settings, RefreshCw, CheckCircle2, AlertCircle, FileText, Download, Upl
 import { User } from 'firebase/auth';
 import { AppSettings, Movimiento, MetaAhorro } from '../types';
 import { GoogleSheetsIntegration } from './GoogleSheetsIntegration';
+import { UnauthorizedDomainModal } from './UnauthorizedDomainModal';
 import firebaseConfig from '../../firebase-applet-config.json';
 
 interface SettingsViewProps {
@@ -39,6 +40,7 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
   const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null);
   const [isSyncing, setIsSyncing] = useState(false);
   const [showAdvancedAppsScript, setShowAdvancedAppsScript] = useState(false);
+  const [showUnauthorizedModal, setShowUnauthorizedModal] = useState(false);
 
   const handleSaveSettings = (e: React.FormEvent) => {
     e.preventDefault();
@@ -301,6 +303,19 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
               )}
             </span>
           </div>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-[#DCE3DC]/50 pt-2.5">
+            <div>
+              <span className="text-[#16241E] font-semibold text-xs block">¿Error al iniciar sesión con Google (auth/unauthorized-domain)?</span>
+              <span className="text-[#6B776F] text-[11px]">Agrega el dominio de tu app a la lista de dominios autorizados de Firebase.</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowUnauthorizedModal(true)}
+              className="inline-flex items-center gap-1 px-3 py-1.5 bg-white border border-[#DCE3DC] hover:bg-[#EEF2EE] text-[#1F5143] font-semibold text-xs rounded-lg shadow-2xs transition-colors shrink-0"
+            >
+              <span>Ver cómo autorizar dominio</span>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -384,6 +399,12 @@ export const SettingsView: React.FC<SettingsViewProps> = ({
           </button>
         </div>
       </div>
+
+      {/* Modal para Guía de Autorización de Dominio en Firebase */}
+      <UnauthorizedDomainModal
+        isOpen={showUnauthorizedModal}
+        onClose={() => setShowUnauthorizedModal(false)}
+      />
     </div>
   );
 };

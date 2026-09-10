@@ -35,10 +35,11 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
 
   // Filter and sort movements
   const filteredMovements = useMemo(() => {
+    const selMonthNorm = (selectedMonth || '').trim().toLowerCase();
     return movimientos
       .filter((m) => {
         // Month filter
-        if (filterMonthScope === 'current' && m.mes !== selectedMonth) {
+        if (filterMonthScope === 'current' && (m.mes || '').trim().toLowerCase() !== selMonthNorm) {
           return false;
         }
         // Tipo filter
@@ -52,9 +53,9 @@ export const HistoryView: React.FC<HistoryViewProps> = ({
         // Search query
         if (search.trim()) {
           const q = search.toLowerCase();
-          const matchConcepto = m.concepto.toLowerCase().includes(q);
+          const matchConcepto = (m.concepto || '').toLowerCase().includes(q);
           const matchNotas = m.notas ? m.notas.toLowerCase().includes(q) : false;
-          const matchTipo = m.tipo.toLowerCase().includes(q);
+          const matchTipo = (m.tipo || '').toLowerCase().includes(q);
           if (!matchConcepto && !matchNotas && !matchTipo) return false;
         }
         return true;

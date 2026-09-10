@@ -11,7 +11,10 @@ export function formatCurrency(amount: number, symbol: string = '$'): string {
 }
 
 export function calculateResumen(movimientos: Movimiento[], mes: string): ResumenMes {
-  const mesMovimientos = movimientos.filter((m) => m.mes === mes);
+  const targetMes = (mes || '').trim().toLowerCase();
+  const mesMovimientos = movimientos.filter(
+    (m) => (m.mes || '').trim().toLowerCase() === targetMes
+  );
 
   let ingreso = 0;
   let facturas = 0;
@@ -127,4 +130,150 @@ export function downloadCSV(movimientos: Movimiento[], filename: string = 'mis-f
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
+}
+
+export interface MesBarData {
+  mes: string;
+  mesCorto: string;
+  ingresos: number;
+  gastos: number;
+  ahorros: number;
+  balance: number;
+}
+
+export function calculateAnnualOverview(movimientos: Movimiento[]): MesBarData[] {
+  const MESES_LIST = [
+    { nombre: 'Enero', corto: 'Ene' },
+    { nombre: 'Febrero', corto: 'Feb' },
+    { nombre: 'Marzo', corto: 'Mar' },
+    { nombre: 'Abril', corto: 'Abr' },
+    { nombre: 'Mayo', corto: 'May' },
+    { nombre: 'Junio', corto: 'Jun' },
+    { nombre: 'Julio', corto: 'Jul' },
+    { nombre: 'Agosto', corto: 'Ago' },
+    { nombre: 'Septiembre', corto: 'Sep' },
+    { nombre: 'Octubre', corto: 'Oct' },
+    { nombre: 'Noviembre', corto: 'Nov' },
+    { nombre: 'Diciembre', corto: 'Dic' },
+  ];
+
+  return MESES_LIST.map(({ nombre, corto }) => {
+    const targetName = nombre.toLowerCase();
+    const list = movimientos.filter(
+      (m) => (m.mes || '').trim().toLowerCase() === targetName
+    );
+    let ingresos = 0;
+    let gastos = 0;
+    let ahorros = 0;
+
+    for (const m of list) {
+      const val = Number(m.monto) || 0;
+      if (m.tipo === 'Ingreso') {
+        ingresos += val;
+      } else if (m.tipo === 'Ahorro' || m.tipo === 'Inversion' || m.necesidad === 'Ahorros') {
+        ahorros += val;
+      } else {
+        gastos += val;
+      }
+    }
+
+    return {
+      mes: nombre,
+      mesCorto: corto,
+      ingresos,
+      gastos,
+      ahorros,
+      balance: ingresos - (gastos + ahorros),
+    };
+  });
+}
+
+export interface CategoryItem {
+  name: string;
+  value: number;
+  color: string;
+  percentage: number;
+}
+
+export function calculateCategoryBreakdown(movimientos: Movimiento[], mes: string): CategoryItem[] {
+  const targetMes = (mes || '').trim().toLowerCase();
+  const filtered = movimientos.filter(
+    (m) => (m.mes || '').trim().toLowerCase() === targetMes && m.tipo !== 'Ingreso'
+  );
+
+  const map: Record<string, number> = {};
+  let total = 0;
+
+  for (const m of filtered) {
+    const cat = m.categoriaDetalle || m.concepto || 'Varios';
+    const val = Number(m.monto) || 0;
+    map[cat] = (map[cat] || 0) + val;
+    total += val;
+  }
+
+  const COLORS = [
+    '#3E7C6B',
+    '#C9A227',
+    '#A6483B',
+    '#2563EB',
+    '#7C3AED',
+    '#DB2777',
+    '#059669',
+    '#D97706',
+    '#4F46E5',
+    '#64748B',
+  ];
+
+  return Object.entries(map)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 7)
+    .map(([name, value], index) => ({
+      name,
+      value,
+      color: COLORS[index % COLORS.length],
+      percentage: total > 0 ? Math.round((value / total) * 100) : 0,
+    }));
+}
+
+export interface FinancialKPIs {
+  tasaAhorro: number;
+  gastoDiario: number;
+  proyeccionFinMes: number;
+  diasCobertura: number;
+  diasTranscurridos: number;
+  diasTotalesMes: number;
+}
+
+export function calculateFinancialKPIs(
+  movimientos: Movimiento[],
+  mes: string,
+  ingresoTotal: number,
+  totalGastado: number,
+  totalAhorrado: number
+): FinancialKPIs {
+  const now = new Date();
+  const currentMonthIdx = now.getMonth();
+  const diasTotalesMes = new Date(now.getFullYear(), currentMonthIdx + 1, 0).getDate();
+  const diasTranscurridos = Math.max(1, Math.min(now.getDate(), diasTotalesMes));
+
+  const tasaAhorro = ingresoTotal > 0 ? Math.round((totalAhorrado / ingresoTotal) * 100) : 0;
+  const gastoDiario = Math.round((totalGastado / diasTranscurridos) * 100) / 100;
+  const gastoProyectado = gastoDiario * diasTotalesMes;
+  const proyeccionFinMes = Math.round((ingresoTotal - gastoProyectado - totalAhorrado) * 100) / 100;
+
+  // Days of coverage (total accumulated savings / average daily expense)
+  const allSavings = movimientos
+    .filter((m) => m.tipo === 'Ahorro' || m.tipo === 'Inversion' || m.necesidad === 'Ahorros')
+    .reduce((acc, curr) => acc + (Number(curr.monto) || 0), 0);
+  
+  const diasCobertura = gastoDiario > 0 ? Math.round(allSavings / gastoDiario) : 0;
+
+  return {
+    tasaAhorro,
+    gastoDiario,
+    proyeccionFinMes,
+    diasCobertura,
+    diasTranscurridos,
+    diasTotalesMes,
+  };
 }
